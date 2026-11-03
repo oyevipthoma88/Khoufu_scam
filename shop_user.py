@@ -97,13 +97,13 @@ async def home_view(uid: int, name: str):
     upd = shop.get("update_link") or ""
     con = shop.get("contact") or ""
     rows = [
-        [B("📱 Buy Account", "u:buy:account", G, "u_acc"), B("📢 Buy Channel", "u:buy:channel:0", G, "u_chan")],
-        [B("👥 Buy Group", "u:buy:group:0", G, "u_grp"), B("🤖 Buy Bot", "u:buy:bot:0", G, "u_bot")],
-        [B("📚 Buy Method", "u:buy:method:0", G, "u_meth"),
-         ui.U("👑 Owner", _tg_link(con)) if con else B("👑 Owner", "u:owner", P, "u_owner")],
-        [ui.U("📣 Update Channel", _tg_link(upd)) if upd else B("📣 Update Channel", "u:upd", P, "u_upd"),
-         B("📖 User Tutorial", "u:tut", D, "u_tut")],
-        [B("🎟 Redeem Code", "u:redeem", P, "u_redeem"), B("🧾 My Orders", "u:orders", D, "u_orders")],
+        [B("📱 Buy Telegram Account", "u:buy:account", G, "u_acc")],
+        [B("📢 Channel", "u:buy:channel:0", G, "u_chan"), B("👥 Group", "u:buy:group:0", G, "u_grp")],
+        [B("🤖 Bot", "u:buy:bot:0", G, "u_bot"), B("📚 Method", "u:buy:method:0", G, "u_meth")],
+        [B("🧾 My Orders", "u:orders", P, "u_orders"), B("🎟 Redeem", "u:redeem", P, "u_redeem")],
+        [ui.U("📣 Updates", _tg_link(upd)) if upd else B("📣 Updates", "u:upd", P, "u_upd"),
+         B("📖 How to buy", "u:tut", P, "u_tut"),
+         ui.U("👑 Support", _tg_link(con)) if con else B("👑 Support", "u:owner", P, "u_owner")],
     ]
     if is_owner(uid):
         rows.append([B("🔙 Owner menu", "home", D, "back")])
@@ -214,12 +214,13 @@ async def buy_list(q: CallbackQuery, parts: list[str]):
     shop = await db.get_shop()
     back = [B("🔙 Back", "u:home", D, "back")]
     if kind == "account" and len(parts) < 4:
-        rows, lines = [], ["📱 **Buy Telegram Account**\n\nChoose the account type 👇\n"]
+        rows, lines = [], ["📱 **TELEGRAM ACCOUNTS**\n━━━━━━━━━━━━━━━━━━"]
         for t, name in core.TAGS.items():
             n = await db.stock_count({"kind": "account", "status": "available", **core.tag_query(t)})
             lines.append(f"{name} – **{n}** in stock")
             rows.append([B(f"{name} • {n}", f"u:buy:account:{t}", R if t == "scam" else G if t == "normal" else P,
                            core.TAG_KEY[t])])
+        lines.append("━━━━━━━━━━━━━━━━━━\n👇 Choose the account type")
         return await show(q, "\n".join(lines), rows + [back])
     if kind == "account":
         tag = parts[3] if parts[3] in core.TAGS else "normal"
@@ -235,7 +236,7 @@ async def buy_list(q: CallbackQuery, parts: list[str]):
             lines.append(f"{label} – **{c['n']}** in stock – {money(p) if p else 'price not set'}")
             if p:
                 rows.append([B(f"{label} • {c['n']} • {money(p)}", f"u:acc:{tag}-{cc}", G)])
-        lines.append("\nSelect a country 👇")
+        lines.append("━━━━━━━━━━━━━━━━━━\n🌍 Select a country 👇")
         return await show(q, "\n".join(lines), rows + [back])
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
     items = await db.stock_find({"kind": kind, "status": "available"}, limit=PAGE + 1, skip=page * PAGE)
@@ -271,8 +272,8 @@ async def item_view(q: CallbackQuery, t: str, ref: str):
             return await show(q, "😔 Sorry, that country just went out of stock.", [[B("🔙 Back", f"u:buy:account:{tag}", D, "back")]])
         p = price_for_country(shop, cc)
         text = (f"📱 **Telegram account** – {core.TAGS[tag]}\n{shop_tg.flag(cc)} Country: **{sample.get('country_name') or cc}**\n"
-                f"📦 In stock: **{n}**\n💰 Price: **{money(p)}**\n\n"
-                "You get the number + 2FA, and I give you the login OTP here.")
+                f"📦 In stock: **{n}**\n💰 Price: **{money(p)}**\n━━━━━━━━━━━━━━━━━━\n"
+                "🎁 You get: number + 2FA password\n📩 Login OTP is sent right here\n🔐 Bot logs out after you log in")
         back_to = f"u:buy:account:{tag}"
     else:
         try:
@@ -347,10 +348,11 @@ async def pay_screen(q: CallbackQuery, o: dict, shop: dict, bal: float | None = 
         pay.append(f"🏦 UPI: `{shop['upi']}`")
     if shop.get("qr"):
         pay.append("📷 Scan the QR code")
-    text = (f"💳 **Secure Checkout**\n\n{KIND_ICON[o['kind']]} {clean(o['title'])}\n"
-            f"💰 Amount: **{money(o['price'])}**\n\n" + ("\n".join(pay) + "\n\n" if pay else "") +
-            f"1. Pay exactly **{money(o['price'])}**\n2. Tap **✅ I have paid**, send screenshot / UTR\n\n"
-            f"⏳ Unpaid orders are cancelled after {config.ORDER_TIMEOUT} min.")
+    text = (f"💳 **SECURE CHECKOUT**\n━━━━━━━━━━━━━━━━━━\n{KIND_ICON[o['kind']]} **{clean(o['title'])}**\n"
+            f"💰 Total: **{money(o['price'])}**   •   👛 Wallet: {money(bal)}\n━━━━━━━━━━━━━━━━━━\n"
+            + ("\n".join(pay) + "\n\n" if pay else "") +
+            f"**① Pay** exactly **{money(o['price'])}**\n**② Tap** ✅ I have paid\n**③ Send** screenshot / UTR\n━━━━━━━━━━━━━━━━━━\n"
+            f"⏳ Auto-cancel in **{config.ORDER_TIMEOUT} min** if unpaid")
     rows = [[B("✅ I have paid", f"u:paid:{o['_id']}", G)]]
     if bal >= o["price"]:
         rows.insert(0, [B(f"💰 Pay with balance ({money(bal)})", f"u:bal:{o['_id']}", P)])
