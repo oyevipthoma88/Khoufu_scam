@@ -20,6 +20,23 @@ BOT = None
 SSTATE: dict[int, dict] = {}     # per-user conversation state (owners and buyers)
 
 KIND_ICON = {"account": "📱", "channel": "📢", "group": "👥", "bot": "🤖", "method": "📚"}
+TAGS = {"normal": "✅ Normal", "scam": "⚠️ Scam Tag", "fake": "🎭 Fake Tag"}
+TAG_KEY = {"normal": "t_normal", "scam": "t_scam", "fake": "t_fake"}
+
+
+def tag_query(tag: str) -> dict:
+    """Old stock has no tag -> counts as normal."""
+    return {"tag": {"$nin": ["scam", "fake"]}} if tag == "normal" else {"tag": tag}
+
+
+def split_ref(ref: str) -> tuple[str, str]:
+    """'scam-IN' -> ('scam', 'IN'); old 'IN' -> ('normal', 'IN')."""
+    if "-" in ref and ref.split("-", 1)[0] in TAGS:
+        t, cc = ref.split("-", 1)
+        return t, cc
+    return "normal", ref
+
+
 KIND_NAME = {"account": "Account", "channel": "Channel", "group": "Group", "bot": "Bot", "method": "Method"}
 STATUS_TXT = {
     "awaiting_payment": "💳 waiting for payment", "awaiting_approval": "⏳ waiting for owner approval",
@@ -131,6 +148,17 @@ async def notify_owners(text: str, rows=None, photo: str | None = None):
                 await send(oid, text, rows)
         except Exception as e:
             log.warning("owner %s not reachable: %s", oid, e)
+
+
+async def notify_adder(it: dict, text: str, rows=None):
+    """Tell the owner who ADDED this stock item (falls back to all owners)."""
+    adder = it.get("added_by")
+    if adder:
+        try:
+            return await send(adder, text, rows)
+        except Exception as e:
+            log.warning("adder %s not reachable: %s", adder, e)
+    await notify_owners(text, rows)
 
 
 def lg(text: str, level: str = "🛍"):
