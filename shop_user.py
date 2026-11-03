@@ -126,6 +126,8 @@ async def cmd_start(_, m: Message):
             await db.set_user(uid, {"verified": True})
             lg(f"New user verified: {who(m.from_user)}", "👤")
     t, r = await home_view(uid, m.from_user.first_name or "friend")
+    if ui.UI.get("start_pic"):
+        return await core.send_photo(m.chat.id, ui.UI["start_pic"], t, r)
     await reply(m, t, r)
 
 
@@ -166,7 +168,10 @@ async def user_cb(q: CallbackQuery):
     if act == "home":
         await clear_state(uid)
         t, r = await home_view(uid, q.from_user.first_name or "friend")
-        return await show(q, t, r)
+        pic = ui.UI.get("start_pic")
+        if pic and q.message.photo:  # already a photo -> just swap caption
+            return await show(q, t, r)
+        return await show(q, t, r, photo=pic)
     if act == "tut":
         shop = await db.get_shop()
         txt = shop.get("tutorial") or TUTORIAL.format(mins=config.ORDER_TIMEOUT)
@@ -202,18 +207,28 @@ async def buy_list(q: CallbackQuery, parts: list[str]):
     kind = parts[2]
     shop = await db.get_shop()
     back = [B("🔙 Back", "u:home", D, "back")]
+    if kind == "account" and len(parts) < 4:
+        rows, lines = [], ["📱 **Buy Telegram Account**\n\nChoose the account type 👇\n"]
+        for t, name in core.TAGS.items():
+            n = await db.stock_count({"kind": "account", "status": "available", **core.tag_query(t)})
+            lines.append(f"{name} – **{n}** in stock")
+            rows.append([B(f"{name} • {n}", f"u:buy:account:{t}", R if t == "scam" else G if t == "normal" else P,
+                           core.TAG_KEY[t])])
+        return await show(q, "\n".join(lines), rows + [back])
     if kind == "account":
-        rows_c = await db.account_countries()
+        tag = parts[3] if parts[3] in core.TAGS else "normal"
+        back = [B("🔙 Back", "u:buy:account", D, "back")]
+        rows_c = await db.account_countries(core.tag_query(tag))
         if not rows_c:
-            return await show(q, "😔 **Accounts are out of stock** right now.\nCheck again later or tap 📣 Update Channel.", [back])
-        lines, rows = ["📱 **Account stock**\n"], []
+            return await show(q, f"😔 **{core.TAGS[tag]} accounts are out of stock** right now.\nCheck again later or tap 📣 Update Channel.", [back])
+        lines, rows = [f"📱 **{core.TAGS[tag]} account stock**\n"], []
         for c in rows_c:
             cc = c["_id"]
             p = price_for_country(shop, cc)
             label = f"{shop_tg.flag(cc)} {c.get('name') or cc}"
             lines.append(f"{label} – **{c['n']}** in stock – {money(p) if p else 'price not set'}")
             if p:
-                rows.append([B(f"{label} • {c['n']} • {money(p)}", f"u:acc:{cc}", G)])
+                rows.append([B(f"{label} • {c['n']} • {money(p)}", f"u:acc:{tag}-{cc}", G)])
         lines.append("\nSelect a country 👇")
         return await show(q, "\n".join(lines), rows + [back])
     page = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
@@ -242,15 +257,17 @@ async def buy_list(q: CallbackQuery, parts: list[str]):
 async def item_view(q: CallbackQuery, t: str, ref: str):
     shop = await db.get_shop()
     if t == "a":
-        n = await db.stock_count({"kind": "account", "country": ref, "status": "available"})
-        sample = await db.stock_col.find_one({"kind": "account", "country": ref, "status": "available"})
+        tag, cc = core.split_ref(ref)
+        aq = {"kind": "account", "country": cc, "status": "available", **core.tag_query(tag)}
+        n = await db.stock_count(aq)
+        sample = await db.stock_col.find_one(aq)
         if not n or not sample:
-            return await show(q, "😔 Sorry, that country just went out of stock.", [[B("🔙 Back", "u:buy:account", D, "back")]])
-        p = price_for_country(shop, ref)
-        text = (f"📱 **Telegram account**\n{shop_tg.flag(ref)} Country: **{sample.get('country_name') or ref}**\n"
+            return await show(q, "😔 Sorry, that country just went out of stock.", [[B("🔙 Back", f"u:buy:account:{tag}", D, "back")]])
+        p = price_for_country(shop, cc)
+        text = (f"📱 **Telegram account** – {core.TAGS[tag]}\n{shop_tg.flag(cc)} Country: **{sample.get('country_name') or cc}**\n"
                 f"📦 In stock: **{n}**\n💰 Price: **{money(p)}**\n\n"
                 "You get the number + 2FA, and I give you the login OTP here.")
-        back_to = "u:buy:account"
+        back_to = f"u:buy:account:{tag}"
     else:
         try:
             it = await db.get_stock(ObjectId(ref))
@@ -284,8 +301,9 @@ async def make_order(q: CallbackQuery, t: str, ref: str):
         for o in [x async for x in db.orders_col.find({"user_id": uid, "status": "awaiting_payment"})]:
             await cancel_order(o, "cancelled")
         if t == "a":
-            query = {"kind": "account", "country": ref}
-            price = price_for_country(shop, ref)
+            tag, cc = core.split_ref(ref)
+            query = {"kind": "account", "country": cc, **core.tag_query(tag)}
+            price = price_for_country(shop, cc)
         else:
             try:
                 query = {"_id": ObjectId(ref)}
@@ -306,7 +324,10 @@ async def make_order(q: CallbackQuery, t: str, ref: str):
         o = await db.new_order({
             "user_id": uid, "user_name": q.from_user.first_name or "", "username": q.from_user.username,
             "kind": item["kind"], "stock_id": item["_id"], "country": item.get("country"),
-            "title": item.get("title") or f"{item.get('country_name', '')} account", "price": price,
+            "title": (item.get("title") or f"{item.get('country_name', '')} account")
+                     + ("" if (item.get("tag") or "normal") == "normal" else f" [{item['tag'].upper()}]"),
+            "price": price, "tag": item.get("tag") or "normal", "phone": item.get("phone"),
+            "added_by": item.get("added_by"),
             "status": "awaiting_payment", "expires": db.now() + dt.timedelta(minutes=config.ORDER_TIMEOUT)})
     lg(f"Order #{o['_id']} created by {who(q.from_user)}: {order_line(o)}", "🛒")
     await pay_screen(q, o, shop, bal)
@@ -511,12 +532,36 @@ async def delivery_view(o: dict):
     return text, rows
 
 
+def _sale_card(o: dict, it: dict, head: str) -> str:
+    buyer = f"{clean(o.get('user_name'))}" + (f" (@{o['username']})" if o.get("username") else "")
+    lines = [head, "", f"🧾 Order: **#{o['_id']}**", f"{KIND_ICON.get(o['kind'], '')} Item: **{clean(o.get('title'))}**"]
+    if o["kind"] == "account":
+        lines += [f"📱 Number: `+{it.get('phone', '?')}`", f"🆔 Account TG ID: `{it.get('uid', '?')}`",
+                  f"🏷 Type: {core.TAGS.get(it.get('tag') or 'normal')}",
+                  f"🌍 Country: {shop_tg.flag(it.get('country') or '')} {it.get('country_name') or it.get('country') or '?'}"]
+    lines += [f"💰 Price: **{money(o['price'])}** ({o.get('paid_by') or 'UPI/QR'})",
+              f"👤 Buyer: {buyer}", f"🆔 Buyer ID: `{o['user_id']}`",
+              f"➕ Added by: `{it.get('added_by', '?')}` {clean(it.get('added_by_name'))}",
+              f"🕒 Time: {db.now().strftime('%d-%m-%Y %H:%M UTC')}"]
+    return "\n".join(lines)
+
+
 async def complete_order(o: dict, extra: dict | None = None):
     await db.move_order(o["_id"], ["approved", "delivered", "transferring", "logging_out", "manual"],
                         "completed", extra)
     await db.update_stock(o["stock_id"], {"status": "sold", "sold_to": o["user_id"], "sold_at": db.now()},
                           unset={"session": ""} if o["kind"] == "account" else None)
-    lg(f"Order #{o['_id']} COMPLETED – {order_line(o)}", "🏁")
+    lg(f"Order #{o['_id']} COMPLETED – {order_line(o)} | buyer {o['user_id']} @{o.get('username') or '-'}", "🏁")
+    if o["kind"] == "account":
+        it = await db.get_stock(o["stock_id"]) or {}
+        lg(f"BOT SESSION LOGGED OUT – #{o['_id']} +{it.get('phone')} (TG id {it.get('uid')}) – waiting for owner "
+           f"{it.get('added_by')} to log out own device", "🔐")
+        await core.notify_adder(it, _sale_card(o, it, "🔐 **ACTION NEEDED – log out your device!**") +
+            "\n\nThe buyer is logged in and the **bot session is logged out**.\n"
+            "⚠️ Telegram does not let a new login remove older sessions for **24 hours**, so the buyer "
+            "cannot kick you – **you** must log out now:\nTelegram → Settings → Devices → terminate this account "
+            "(or log out on your phone).\n\nTap the button after you did it.",
+            [[B("✅ I logged out", f"so:olo:{o['_id']}", G)]])
 
 
 async def deliver(o: dict):
@@ -549,7 +594,9 @@ async def deliver(o: dict):
             await send(uid, f"✅ **Order #{oid} approved!**\n\n📚 **{clean(it['title'])}**\n\n{it['content']}",
                        [[B("🏠 Menu", "u:home", G)]])
             await complete_order(o)
-        lg(f"Order #{oid} delivered to {uid}", "📦")
+        lg(f"SOLD #{oid} | {order_line(o)} | buyer {uid} @{o.get('username') or '-'} | "
+           f"stock {it.get('phone') and '+' + it['phone'] or it.get('title')} | added by {it.get('added_by')}", "💸")
+        await core.notify_adder(it, _sale_card(o, it, "💸 **Your stock was SOLD!**"))
     except Exception as e:
         core.log.exception("deliver failed")
         lg(f"Delivery FAILED for order #{oid}: {friendly_err(e)}", "❌")
