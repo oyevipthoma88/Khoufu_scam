@@ -80,6 +80,8 @@ async def _input(_, m):
 
 
 async def _fallback(_, m):
+    if core.too_fast(m.from_user.id, 1.5):  # anti-spam: ignore message floods
+        raise StopPropagation
     await core.reply(m, "Use the menu 👇", [[B("🏠 Open Menu", "u:home", D)]])
     raise StopPropagation
 
