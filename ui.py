@@ -33,6 +33,11 @@ EMOJI_KEYS = {
     "u_acc": "📱 Buy Account", "u_chan": "📢 Buy Channel", "u_grp": "👥 Buy Group", "u_bot": "🤖 Buy Bot",
     "u_meth": "📚 Buy Method", "u_owner": "👑 Owner", "u_upd": "📣 Update Channel", "u_tut": "📖 Tutorial",
     "u_redeem": "🎟 Redeem Code", "u_orders": "🧾 My Orders",
+    "t_normal": "✅ Normal Account", "t_scam": "⚠️ Scam Tag Account", "t_fake": "🎭 Fake Tag Account",
+    "addstock": "➕ Add Stock", "stock": "📦 Stock List", "orders": "🧾 Orders", "price": "💰 Set Price",
+    "qr": "🖼 Set QR", "upi": "🏦 Set UPI", "codes": "🎟 Redeem Codes", "force": "🔒 Must-Join",
+    "menu": "🏠 Menu", "buynow": "💳 Buy now", "paid": "✅ I have paid", "otp": "📩 Get OTP",
+    "approve": "✅ Approve", "reject": "❌ Reject", "addowner": "👑 Owners",
 }
 UI = {"emojis": {}, "icons": True, "start_pic": None}
 
@@ -57,6 +62,8 @@ def build(rows, icons: bool | None = None) -> M:
             if eid:
                 # premium icon replaces the plain emoji at the start of the label
                 text = text.split(" ", 1)[1] if " " in text and not text[0].isalnum() else text
+            if style == D:  # no plain grey buttons – every button gets a colour
+                style = R if data and any(x in data for x in (":cx:", ":del", ":rj:", "clear", "picdel", "owrm")) else P
             r.append(InlineKeyboardButton(text, icon_custom_emoji_id=str(eid) if eid else None,
                                           style=style, callback_data=data))
         out.append(r)
