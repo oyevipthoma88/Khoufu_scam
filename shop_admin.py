@@ -31,12 +31,12 @@ async def home_view():
     counts = {k: await db.stock_count({"kind": k, "status": "available"}) for k in KINDS}
     pend = await db.orders_col.count_documents({"status": {"$in": ["awaiting_approval", "approved", "manual"]}})
     sales = await db.sales_stats()
-    text = ("🛍 **Shop Admin**\n\n"
+    text = ("🛍 **SHOP ADMIN**\n━━━━━━━━━━━━━━━━━━\n"
             f"👥 Users: **{await db.count_users()}**\n"
             f"📦 In stock: 📱 {counts['account']} • 📢 {counts['channel']} • 👥 {counts['group']} • "
             f"🤖 {counts['bot']} • 📚 {counts['method']}\n"
             f"🧾 Needs your action: **{pend}**\n"
-            f"💵 Sales: **{sales['n']}** orders • **{money(sales['sum'])}**\n\n"
+            f"💵 Sales: **{sales['n']}** orders • **{money(sales['sum'])}**\n━━━━━━━━━━━━━━━━━━\n"
             f"🖼 QR: {'✅' if shop.get('qr') else '❌'}  🏦 UPI: {('`' + shop['upi'] + '`') if shop.get('upi') else '❌'}\n"
             f"🔒 Must-join: {len(shop['force']) + len(config.FORCE_JOIN)}  "
             f"📣 Update link: {'✅' if shop.get('update_link') else '❌'}  👑 Contact: {'✅' if shop.get('contact') else '❌'}")
