@@ -26,6 +26,9 @@ import database as db
 log = logging.getLogger(__name__)
 
 # Only one heavy job at a time -> safer against Telegram flood limits
+from pyrogram.errors import (AuthKeyUnregistered, AuthKeyDuplicated, UserDeactivated,
+                             UserDeactivatedBan, SessionRevoked)
+
 JOB_LOCK = asyncio.Lock()
 
 USERNAME_TAKEN = (UsernameOccupied, UsernameInvalid, UsernamePurchaseAvailable)
@@ -46,7 +49,10 @@ def new_client(session: str | None = None, name: str = "acc") -> Client:
 @asynccontextmanager
 async def account_client(session: str):
     c = new_client(session)
-    await c.start()
+    try:
+        await c.start()
+    except (AuthKeyUnregistered, AuthKeyDuplicated, UserDeactivated, UserDeactivatedBan, SessionRevoked) as e:
+        raise RuntimeError(f"Session dead ({e.__class__.__name__}) – remove this account and log in again") from e
     try:
         yield c
     finally:
@@ -341,12 +347,12 @@ async def apply_account(acc_id: int, report) -> list[str]:
     async with account_client(acc["session"]) as c:
         try:
             await apply_user(c, s["user"], report)
-        except RPCError as e:
+        except Exception as e:
             await report(f"👤 Profile error: {e}")
         for kind in ("channel", "group"):
             try:
                 await apply_chats(c, acc, kind, s[kind], report)
-            except RPCError as e:
+            except Exception as e:
                 await report(f"{kind} error: {e}")
             acc = await db.get_account(acc_id)
         me = await c.get_me()
