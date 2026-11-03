@@ -83,6 +83,20 @@ def main_kb(auto: bool) -> list:
     ]
 
 
+EXTRA_OWNERS: list[int] = []  # owners added from the bot (saved in DB)
+
+
+def set_owner(oid: int, on: bool):
+    """Add/remove an owner at runtime (filters + config + list)."""
+    for coll in (config.OWNER_IDS, EXTRA_OWNERS):
+        if on and oid not in coll:
+            coll.append(oid)
+        if not on and oid in coll:
+            coll.remove(oid)
+    for f in (OWNER, shop.OWNER):
+        (f.add if on else f.discard)(oid)
+
+
 async def home_text() -> str:
     n = len(await db.all_accounts())
     busy = "🟡 working" if userbot.busy() else "🟢 idle"
@@ -310,10 +324,27 @@ async def handle_cb(q: CallbackQuery):
                              f"✨ Premium button icons: {len(UI['emojis'])} set "
                              f"({'enabled' if UI['icons'] else 'disabled'})", [
             [B("🖼 Set Start Pic", "op:pic", G), B("🗑 Remove Pic", "op:picdel", R)],
-            [B("✨ Button Emojis", "op:emo", P)],
+            [B("✨ Button Emojis", "op:emo", P), B("👑 Owners", "op:own", G, "addowner")],
             [B(f"🎨 Icons: {'ON' if UI['icons'] else 'OFF'}", "op:icons", G if UI['icons'] else R)],
             BACK,
         ])
+    if d == "op:own":
+        extra = set(EXTRA_OWNERS)
+        lines = ["👑 **Owners**\n"] + [f"• `{o}`" + ("" if o in extra else " (from settings, fixed)")
+                                       for o in config.OWNER_IDS]
+        rows = [[B(f"🗑 Remove {o}", f"op:owrm:{o}", R)] for o in EXTRA_OWNERS]
+        return await edit(q, "\n".join(lines), [[B("➕ Add Owner", "op:owadd", G)]] + rows + [back("owner")])
+    if d == "op:owadd":
+        STATE[uid] = {"step": "owner_add"}
+        return await edit(q, "👑 Send the **numeric Telegram ID** of the new owner.\n\n/cancel to stop", [back("op:own")])
+    if d.startswith("op:owrm:"):
+        oid = int(d.split(":")[2])
+        if oid in EXTRA_OWNERS:
+            set_owner(oid, False)
+            await db.set_ui("owners", EXTRA_OWNERS)
+            logchan.push(f"Owner REMOVED: {oid} by {uid}", "👑")
+        q.data = "op:own"
+        return await handle_cb(q)
     if d == "op:pic":
         STATE[uid] = {"step": "start_pic"}
         return await edit(q, "🖼 Send the **photo** for the /start menu.\nIt is saved in the database permanently.\n\n/cancel to stop", [back("owner")])
@@ -553,6 +584,21 @@ async def handle_input(m: Message):
         STATE.pop(uid, None)
         return await reply(m, "✅ Start pic saved permanently.", [back("owner")])
 
+    if step == "owner_add":
+        t = (m.text or "").strip()
+        if not t.isdigit():
+            return await m.reply("❌ Send the numeric ID only. /cancel to stop")
+        STATE.pop(uid, None)
+        if int(t) not in config.OWNER_IDS:
+            set_owner(int(t), True)
+            await db.set_ui("owners", EXTRA_OWNERS)
+            logchan.push(f"Owner ADDED: {t} by {uid}", "👑")
+            try:
+                await send(int(t), "👑 You are now an **owner** of this bot. Send /start.")
+            except Exception:
+                pass
+        return await reply(m, f"✅ `{t}` is now an owner.", [back("op:own")])
+
     if step == "emoji":
         key = st["key"]
         eid = custom_emoji_id(m)
@@ -748,6 +794,8 @@ async def main():
         await db.set_ui("emojis", clean)
         log.warning("Removed invalid button emoji IDs from DB")
     UI.update(emojis=clean, icons=bool(ui["icons"]), start_pic=ui["start_pic"])
+    for o in ui.get("owners") or []:
+        set_owner(int(o), True)
     await bot.start()
     logchan.setup(bot)
     me = await bot.get_me()
