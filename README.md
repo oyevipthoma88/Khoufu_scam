@@ -33,3 +33,8 @@ Owner-only Telegram bot (multiple owners supported).
 - Send OTP with spaces (`1 2 3 4 5`), Telegram blocks plain codes sent in chats.
 - Telegram limits how many public links one account can own; extra chats stay private with an invite link.
 - Use `{n}` inside a channel/group name or bio to number them.
+
+## Owner Panel
+- **🖼 Start Pic** – photo shown on /start, saved in MongoDB (survives restarts).
+- **✨ Button Emojis** – tap a button name, send any premium emoji: it becomes the button icon (saved in MongoDB). If Telegram rejects icons, the bot falls back to plain buttons automatically.
+- Buttons are coloured: green = apply/add, red = reset/remove, blue = navigation.
