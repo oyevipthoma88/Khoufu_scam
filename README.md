@@ -2,6 +2,8 @@
 
 Owner-only Telegram bot (multiple owners supported).
 
+[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://www.heroku.com/deploy?template=https://github.com/oyevipthoma88/Khoufu_scam)
+
 ## Features
 - ➕ Add accounts by **string session** (Pyrogram / Telethon) or **phone login** (OTP + 2FA)
 - ⚙️ **Custom** panel → Set User / Set Channel / Set Group → Set Name, Bio, PFP, Username
