@@ -1,0 +1,19 @@
+{
+  "name": "Khoufu Account Manager Bot",
+  "description": "Owner-only Telegram bot: add accounts, auto-set profile and create public channels/groups.",
+  "repository": "https://github.com/oyevipthoma88/Khoufu_scam",
+  "keywords": ["telegram", "pyrogram", "bot"],
+  "buildpacks": [{ "url": "heroku/python" }],
+  "formation": { "worker": { "quantity": 1, "size": "basic" } },
+  "env": {
+    "API_ID": { "description": "From my.telegram.org", "required": true },
+    "API_HASH": { "description": "From my.telegram.org", "required": true },
+    "BOT_TOKEN": { "description": "From @BotFather", "required": true },
+    "MONGO_URI": { "description": "MongoDB connection string (MongoDB Atlas free works)", "required": true },
+    "OWNER_IDS": { "description": "Owner Telegram user IDs, separated by space", "required": true },
+    "DB_NAME": { "value": "khoufu_bot", "required": false },
+    "CHANNEL_COUNT": { "value": "10", "required": false },
+    "GROUP_COUNT": { "value": "10", "required": false },
+    "ACTION_DELAY": { "description": "Seconds between actions (higher = safer)", "value": "3", "required": false }
+  }
+}
