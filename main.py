@@ -100,7 +100,8 @@ def set_owner(oid: int, on: bool):
 async def home_text() -> str:
     n = len(await db.all_accounts())
     busy = "🟡 working" if userbot.busy() else "🟢 idle"
-    return f"👋 **Welcome, owner!**\n\nAccounts added: **{n}**\nBot: {busy}\nChoose an option:"
+    return (f"👑 **OWNER DASHBOARD**\n━━━━━━━━━━━━━━━━━━\n👤 Accounts added: **{n}**\n⚙️ Bot: {busy}\n"
+            f"👥 Owners: **{len(config.OWNER_IDS)}**\n━━━━━━━━━━━━━━━━━━\n💡 /help shows all commands")
 
 
 async def send_home(chat_id: int):
