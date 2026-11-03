@@ -17,7 +17,9 @@ from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMa
 
 import config
 import database as db
+import logchan
 import userbot
+from logchan import NOPREV
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("pyrogram").setLevel(logging.WARNING)
@@ -90,6 +92,8 @@ def build(rows, icons: bool | None = None) -> M:
                 continue
             text, data, style, key = b
             eid = UI["emojis"].get(key) if (icons and key) else None
+            if eid is not None and not str(eid).isdigit():
+                eid = None  # broken/old value in DB (e.g. 'add') – ignore instead of crashing
             if eid:
                 # premium icon replaces the plain emoji at the start of the label
                 text = text.split(" ", 1)[1] if " " in text and not text[0].isalnum() else text
@@ -133,17 +137,17 @@ async def safe_send(coro_factory):
 
 async def reply(m: Message, text: str, rows=None):
     return await safe_send(lambda ic: m.reply(text, reply_markup=build(rows, ic) if rows else None,
-                                              disable_web_page_preview=True))
+                                              link_preview_options=NOPREV))
 
 
 async def send(chat_id: int, text: str, rows=None):
     return await safe_send(lambda ic: bot.send_message(chat_id, text, reply_markup=build(rows, ic) if rows else None,
-                                                       disable_web_page_preview=True))
+                                                       link_preview_options=NOPREV))
 
 
 async def home_text() -> str:
     n = len(await db.all_accounts())
-    busy = "🟡 working" if userbot.JOB_LOCK.locked() else "🟢 idle"
+    busy = "🟡 working" if userbot.busy() else "🟢 idle"
     return f"👋 **Welcome, owner!**\n\nAccounts added: **{n}**\nBot: {busy}\nChoose an option:"
 
 
@@ -166,8 +170,9 @@ class Reporter:
 
     async def __call__(self, line: str):
         log.info(line)
+        logchan.push(line, "•")
         self.lines.append(str(line)[:300])
-        if time.time() - self.last > 3:
+        if time.time() - self.last > 6:  # max 1 edit / 6s -> no bot flood
             await self.flush()
 
     async def flush(self, done: bool = False):
@@ -176,55 +181,86 @@ class Reporter:
         text = head + "\n\n" + "\n".join(self.lines[-20:])
         try:
             if self.msg:
-                await self.msg.edit_text(text[:4000], disable_web_page_preview=True)
+                await self.msg.edit_text(text[:4000], link_preview_options=NOPREV)
         except MessageNotModified:
             pass
         except FloodWait as e:
-            self.last = time.time() + e.value
-        except Exception:
-            try:
-                self.msg = await bot.send_message(self.chat_id, text[:4000], disable_web_page_preview=True)
-            except Exception:
-                pass
+            self.last = time.time() + e.value  # just skip edits until Telegram allows again
+        except Exception as e:
+            log.warning("progress edit failed: %s", e)
+            if done:
+                try:
+                    self.msg = await bot.send_message(self.chat_id, text[:4000], link_preview_options=NOPREV)
+                except Exception:
+                    pass
+
+
+async def bot_send(chat_id: int, text: str):
+    for _ in range(3):
+        try:
+            return await bot.send_message(chat_id, text, link_preview_options=NOPREV)
+        except FloodWait as e:
+            await asyncio.sleep(int(e.value or 3) + 1)
 
 
 async def send_long(chat_id: int, header: str, lines: list[str]):
     chunk = header
     for line in lines or ["(no links yet)"]:
         if len(chunk) + len(line) + 1 > 3900:
-            await bot.send_message(chat_id, chunk, disable_web_page_preview=True)
+            await bot_send(chat_id, chunk)
             chunk = ""
+            await asyncio.sleep(1)
         chunk += "\n" + line
-    await bot.send_message(chat_id, chunk, disable_web_page_preview=True)
+    await bot_send(chat_id, chunk)
 
 
 async def run_job(chat_id: int, title: str, ids: list[int], fn):
-    """Background job over many accounts (queued, one at a time). Never crashes the bot."""
+    """Background job over many accounts. Accounts run in parallel (PARALLEL_ACCOUNTS),
+    the same account is never processed twice at once. Never crashes the bot."""
     try:
-        queued = " (waiting for running job)" if userbot.JOB_LOCK.locked() else ""
-        msg = await bot.send_message(chat_id, f"⏳ {title} queued{queued}…")
+        clash = [i for i in ids if userbot.account_lock(i).locked()]
+        note = f"\n⚠️ {len(clash)} account(s) busy in another job – they will wait." if clash else ""
+        msg = await bot.send_message(chat_id, f"⏳ {title} started on {len(ids)} account(s) "
+                                              f"({config.PARALLEL_ACCOUNTS} at a time)…{note}")
         rep = Reporter(msg, chat_id)
-        all_links: list[str] = []
-        ok = fail = 0
-        async with userbot.JOB_LOCK:
-            for i, acc_id in enumerate(ids, 1):
+        logchan.push(f"JOB START: {title} – {len(ids)} account(s)", "🚀")
+        results: dict[int, list[str]] = {}
+        errors: list[str] = []
+        sem = asyncio.Semaphore(config.PARALLEL_ACCOUNTS)
+        t0 = time.time()
+
+        async def one(i: int, acc_id: int):
+            async with sem, userbot.account_lock(acc_id):
+                userbot.ACTIVE.add(acc_id)
                 await rep(f"— [{i}/{len(ids)}] account {acc_id}")
                 try:
                     links = await fn(acc_id, rep)
                     acc = await db.get_account(acc_id) or {}
                     head = f"\n**{acc.get('info', {}).get('name', acc_id)}** ({acc_id})"
-                    all_links += [head] + (links or [])
-                    ok += 1
+                    results[acc_id] = [head] + (links or [])
+                    logchan.push(f"{title} OK on {acc_id} – {len(links or [])} link(s)", "✅")
                 except Exception as e:
                     log.exception("job failed for %s", acc_id)
+                    errors.append(f"{acc_id}: {friendly(e)}")
                     await rep(f"❌ {acc_id}: {friendly(e)}")
-                    fail += 1
-        await rep(f"🏁 {title} finished – ✅ {ok}  ❌ {fail}")
+                    logchan.push(f"{title} FAILED on {acc_id}: {friendly(e)}", "❌")
+                finally:
+                    userbot.ACTIVE.discard(acc_id)
+
+        await asyncio.gather(*(one(i, a) for i, a in enumerate(ids, 1)))
+        ok, fail = len(results), len(errors)
+        took = int(time.time() - t0)
+        await rep(f"🏁 {title} finished in {took}s – ✅ {ok}  ❌ {fail}")
         await rep.flush(done=True)
+        logchan.push(f"JOB END: {title} – ok {ok}, failed {fail}, {took}s", "🏁")
+        all_links = [x for acc_id in ids for x in results.get(acc_id, [])]
         await send_long(chat_id, f"🔗 **{title} – links**", all_links)
+        if errors:
+            await send_long(chat_id, f"⚠️ **{title} – errors**", errors)
         await send(chat_id, "What next?", [[B("🏠 Main Menu", "home", P, "back")]])
     except Exception as e:
         log.exception("run_job crashed")
+        logchan.push(f"{title} crashed: {friendly(e)}", "💥")
         try:
             await bot.send_message(chat_id, f"⚠️ {title} stopped: {friendly(e)}")
         except Exception:
@@ -236,6 +272,8 @@ def friendly(e: Exception) -> str:
     msg = str(e) or name
     if isinstance(e, FloodWait):
         return f"Telegram flood limit – wait {e.value}s and try again"
+    if isinstance(e, userbot.FloodTooLong):
+        return msg
     if "AUTH_KEY" in msg or "SESSION_REVOKED" in msg or "USER_DEACTIVATED" in msg:
         return "Session expired / account logged out – remove it and add again"
     return msg[:300]
@@ -296,7 +334,7 @@ async def edit(q: CallbackQuery, text: str, rows):
         return await send(msg.chat.id, text, rows)
     try:
         return await safe_send(lambda ic: msg.edit_text(text, reply_markup=build(rows, ic),
-                                                        disable_web_page_preview=True))
+                                                        link_preview_options=NOPREV))
     except Exception:
         return await send(msg.chat.id, text, rows)
 
@@ -313,6 +351,7 @@ async def callbacks(_, q: CallbackQuery):
         await handle_cb(q)
     except Exception as e:
         log.exception("callback %s failed", q.data)
+        logchan.push(f"Button '{q.data}' error: {friendly(e)}", "❌")
         try:
             await send(q.message.chat.id, f"⚠️ **Error:** {friendly(e)}", [BACK])
         except Exception:
@@ -343,7 +382,7 @@ async def handle_cb(q: CallbackQuery):
     if d == "status":
         s = await db.get_settings()
         accs = await db.all_accounts()
-        busy = "🟡 busy" if userbot.JOB_LOCK.locked() else "🟢 idle"
+        busy = "🟡 busy" if userbot.busy() else "🟢 idle"
         lines = [f"📊 **Status** – {busy}", f"Accounts: {len(accs)}",
                  f"Applied: {sum(1 for a in accs if a.get('applied'))}",
                  f"Auto apply: {'ON' if s['auto'] else 'OFF'}",
@@ -547,6 +586,7 @@ async def handle_cb(q: CallbackQuery):
         acc_id = parse_id(d[3:])
         if acc_id:
             await db.remove_account(acc_id)
+            logchan.push(f"Account removed: {acc_id}", "🗑")
         return await edit(q, "🗑 Account removed.", [back("accs")])
 
 
@@ -556,6 +596,7 @@ async def finish_login(m: Message, user_id: int, session: str, info: dict, origi
     await db.save_account(user_id, session, info, original)
     s = await db.get_settings()
     word = "updated" if existed else "added"
+    logchan.push(f"Account {word}: {info.get('name')} ({user_id}) phone {info.get('phone') or '-'}", "➕")
     await reply(m, f"✅ **Account {word}:** {info.get('name')} (`{user_id}`)",
                 [[B("🚀 Apply now", f"ap:{user_id}", G, "apply")], BACK])
     if s["auto"]:
@@ -568,6 +609,7 @@ async def inputs(_, m: Message):
         await handle_input(m)
     except Exception as e:
         log.exception("input failed")
+        logchan.push(f"Input error: {friendly(e)}", "❌")
         await drop_state(m.from_user.id)
         try:
             await reply(m, f"⚠️ **Error:** {friendly(e)}", [BACK])
@@ -625,8 +667,18 @@ async def handle_input(m: Message):
         if field == "pfp":
             if not m.photo:
                 return await m.reply("Please send a photo.")
-            mem = await bot.download_media(m.photo.file_id, in_memory=True)
-            await db.set_field(kind, "pfp", bytes(mem.getbuffer()))
+            try:
+                mem = await bot.download_media(m.photo.file_id, in_memory=True)
+                data = bytes(mem.getbuffer())
+                if not data:
+                    raise ValueError("downloaded photo is empty")
+                await db.set_field(kind, "pfp", data)
+            except Exception as e:
+                log.exception("pfp save failed")
+                logchan.push(f"Save {kind} PFP failed: {friendly(e)}", "❌")
+                return await reply(m, f"❌ **PFP not saved.**\nReason: {friendly(e)}\nSend the photo again or /cancel.",
+                                   [back(f"k:{kind}")])
+            shown = "🖼 photo"
         else:
             if not m.text:
                 return await m.reply("Please send text.")
@@ -639,9 +691,21 @@ async def handle_input(m: Message):
                 if not (4 <= len(val) <= 28) or not val.replace("_", "").isalnum() or not val[0].isalpha() \
                         or not val.isascii():
                     return await m.reply("❌ Invalid username. 4–28 chars, English letters/numbers/_ , start with a letter.")
-            await db.set_field(kind, field, val)
+            try:
+                await db.set_field(kind, field, val)
+            except Exception as e:
+                log.exception("save field failed")
+                logchan.push(f"Save {kind}.{field} failed: {friendly(e)}", "❌")
+                return await reply(m, f"❌ **{FIELD_LABEL[field]} not saved.**\nReason: {friendly(e)}\n"
+                                      "Send it again or /cancel.", [back(f"k:{kind}")])
+            shown = f"`{val}`"
         STATE.pop(uid, None)
-        return await reply(m, f"✅ {KIND_LABEL[kind]} {FIELD_LABEL[field]} saved.\n"
+        saved = (await db.get_settings()).get(kind, {}).get(field)
+        if not saved:
+            return await reply(m, f"❌ {FIELD_LABEL[field]} could not be verified in database. Try again.",
+                               [back(f"k:{kind}")])
+        logchan.push(f"Setting saved: {kind}.{field} = {shown}", "⚙️")
+        return await reply(m, f"✅ **{KIND_LABEL[kind]} {FIELD_LABEL[field]} saved:** {shown}\n\n"
                               "It will be used on all accounts (tap Apply All, or keep Auto ON).",
                            [[B("🔙 Back", f"k:{kind}", D, "back"), B("🚀 Apply All", "apply_all", G, "apply")]])
 
@@ -769,11 +833,17 @@ async def main():
     except Exception as e:
         raise SystemExit(f"MongoDB connection failed: {e}")
     ui = await db.get_ui()
-    UI.update(emojis=dict(ui["emojis"]), icons=bool(ui["icons"]), start_pic=ui["start_pic"])
+    clean = {k: str(v) for k, v in dict(ui["emojis"]).items() if k in EMOJI_KEYS and str(v).isdigit()}
+    if clean != dict(ui["emojis"]):
+        await db.set_ui("emojis", clean)
+        log.warning("Removed invalid button emoji IDs from DB")
+    UI.update(emojis=clean, icons=bool(ui["icons"]), start_pic=ui["start_pic"])
     await bot.start()
+    logchan.setup(bot)
     me = await bot.get_me()
     log.info("Bot started as @%s – owners: %s", me.username, config.OWNER_IDS)
     asyncio.create_task(expire_logins())
+    logchan.push(f"Bot started as @{me.username}", "🟢")
     for oid in config.OWNER_IDS:
         try:
             await send(oid, "✅ Bot is online.", [[B("🏠 Open Menu", "home", P, "back")]])

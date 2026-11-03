@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from pyrogram import Client, raw, types
 from pyrogram.errors import (
     ChannelsAdminPublicTooMuch,
+    Flood,
     FloodWait,
     RPCError,
     UsernameInvalid,
@@ -22,14 +23,26 @@ from pyrogram.errors import (
 
 import config
 import database as db
+import logchan
 
 log = logging.getLogger(__name__)
 
-# Only one heavy job at a time -> safer against Telegram flood limits
 from pyrogram.errors import (AuthKeyUnregistered, AuthKeyDuplicated, UserDeactivated,
                              UserDeactivatedBan, SessionRevoked)
 
-JOB_LOCK = asyncio.Lock()
+# One lock per account: the same account is never worked on by two jobs at once,
+# but different accounts run in parallel (limited by config.PARALLEL_ACCOUNTS).
+ACCOUNT_LOCKS: dict[int, asyncio.Lock] = {}
+ACTIVE: set[int] = set()
+_COUNTER_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def account_lock(acc_id: int) -> asyncio.Lock:
+    return ACCOUNT_LOCKS.setdefault(acc_id, asyncio.Lock())
+
+
+def busy() -> bool:
+    return bool(ACTIVE)
 
 USERNAME_TAKEN = (UsernameOccupied, UsernameInvalid, UsernamePurchaseAvailable)
 
@@ -62,20 +75,32 @@ async def account_client(session: str):
             pass
 
 
+class FloodTooLong(Exception):
+    pass
+
+
 async def safe(fn, *args, **kwargs):
-    """Run a Telegram call, sleeping on FloodWait and retrying."""
-    for _ in range(5):
+    """Run a Telegram call. On any flood error (FloodWait / Slowmode / PremiumWait) sleep the
+    exact time Telegram asks (+ jitter) and retry. Very long waits are not blocked on."""
+    name = getattr(fn, "__name__", "call")
+    for attempt in range(4):
         try:
             return await fn(*args, **kwargs)
-        except FloodWait as e:
-            wait = int(getattr(e, "value", 30) or 30) + 2
-            log.warning("FloodWait %ss", wait)
+        except Flood as e:
+            wait = int(getattr(e, "value", 0) or 10)
+            if wait > config.MAX_FLOOD_WAIT:
+                logchan.push(f"Flood {wait}s on {name} – too long, step skipped", "🛑")
+                raise FloodTooLong(f"Telegram flood limit {wait}s on {name} – skipped") from e
+            wait += 2 + random.randint(0, 3)
+            log.warning("Flood %ss on %s (try %s)", wait, name, attempt + 1)
+            logchan.push(f"Flood wait {wait}s on {name} (try {attempt + 1})", "⏳")
             await asyncio.sleep(wait)
     return await fn(*args, **kwargs)
 
 
 async def pause():
-    await asyncio.sleep(config.ACTION_DELAY)
+    # small random jitter makes the pattern less bot-like -> fewer flood limits
+    await asyncio.sleep(config.ACTION_DELAY + random.uniform(0, config.ACTION_DELAY / 2))
 
 
 def write_tmp(data: bytes) -> str:
@@ -202,6 +227,11 @@ async def claim_username(kind: str, base: str, setter) -> str | None:
     """Try base, base1, base2 ... (shared counter across all accounts, stored in Mongo)."""
     base = base.strip().lstrip("@")
     key = f"{kind}:{base.lower()}"
+    async with _COUNTER_LOCKS.setdefault(key, asyncio.Lock()):
+        return await _claim(key, base, setter)
+
+
+async def _claim(key: str, base: str, setter) -> str | None:
     n = await db.get_counter(key)
     for _ in range(config.USERNAME_TRIES):
         cand = base if n == 0 else f"{base}{n}"
@@ -215,6 +245,7 @@ async def claim_username(kind: str, base: str, setter) -> str | None:
         except USERNAME_TAKEN:
             continue
         await db.set_counter(key, n)
+        logchan.push(f"Username claimed @{cand} ({key})", "🔤")
         return cand
     await db.set_counter(key, n)
     return None
@@ -344,19 +375,26 @@ async def apply_account(acc_id: int, report) -> list[str]:
     s = await db.get_settings()
     name = acc.get("info", {}).get("name", acc_id)
     await report(f"▶️ Applying on {name} ({acc_id})")
+    errors: list[str] = []
     async with account_client(acc["session"]) as c:
-        try:
-            await apply_user(c, s["user"], report)
-        except Exception as e:
-            await report(f"👤 Profile error: {e}")
-        for kind in ("channel", "group"):
+        async def track(label, coro):
             try:
-                await apply_chats(c, acc, kind, s[kind], report)
+                await coro
             except Exception as e:
-                await report(f"{kind} error: {e}")
-            acc = await db.get_account(acc_id)
+                log.exception("%s failed on %s", label, acc_id)
+                errors.append(f"{label}: {e}")
+                await report(f"❌ {label} error: {e}")
+
+        # profile, channels and groups run in parallel on the same account
+        await asyncio.gather(
+            track("Profile", apply_user(c, s["user"], report)),
+            track("Channels", apply_chats(c, acc, "channel", s["channel"], report)),
+            track("Groups", apply_chats(c, acc, "group", s["group"], report)),
+        )
         me = await c.get_me()
-        await db.update_account(acc_id, {"info": user_info(me), "applied": True})
+        await db.update_account(acc_id, {"info": user_info(me), "applied": not errors})
+    if errors:
+        logchan.push(f"Apply on {name} ({acc_id}) had errors: " + " | ".join(errors), "⚠️")
     return account_links(await db.get_account(acc_id))
 
 

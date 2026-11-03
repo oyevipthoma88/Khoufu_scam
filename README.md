@@ -38,3 +38,9 @@ Owner-only Telegram bot (multiple owners supported).
 - **🖼 Start Pic** – photo shown on /start, saved in MongoDB (survives restarts).
 - **✨ Button Emojis** – tap a button name, send any premium emoji: it becomes the button icon (saved in MongoDB). If Telegram rejects icons, the bot falls back to plain buttons automatically.
 - Buttons are coloured: green = apply/add, red = reset/remove, blue = navigation.
+
+
+## New settings
+- `LOG_CHANNEL` – channel ID for detailed logs (bot must be admin)
+- `PARALLEL_ACCOUNTS` – accounts worked on at the same time (default 3)
+- `MAX_FLOOD_WAIT` – longest flood wait the bot will sit through (default 900s)

@@ -20,6 +20,16 @@ GROUP_COUNT = int(os.environ.get("GROUP_COUNT", "10"))
 # Seconds to wait between Telegram actions (avoid flood bans)
 ACTION_DELAY = float(os.environ.get("ACTION_DELAY", "3"))
 
+# Telegram channel/group ID for detailed logs (bot must be admin there), e.g. -1001234567890
+_lc = os.environ.get("LOG_CHANNEL", "").strip()
+LOG_CHANNEL = int(_lc) if _lc.lstrip("-").isdigit() else (_lc or None)
+
+# How many accounts are processed at the same time
+PARALLEL_ACCOUNTS = max(1, int(os.environ.get("PARALLEL_ACCOUNTS", "3")))
+
+# If Telegram asks to wait longer than this (seconds) the step is skipped instead of blocking
+MAX_FLOOD_WAIT = int(os.environ.get("MAX_FLOOD_WAIT", "900"))
+
 # Max numbers tried per username before giving up (base, base1, base2 ...)
 USERNAME_TRIES = int(os.environ.get("USERNAME_TRIES", "300"))
 
