@@ -10,6 +10,7 @@ import database as db
 import shop_admin
 import shop_core as core
 import shop_user
+import tracker
 from shop_core import SSTATE, B, D, friendly_err, lg
 
 clear_state = core.clear_state
@@ -88,6 +89,7 @@ async def _fallback(_, m):
 
 def register(bot):
     core.bind(bot)
+    tracker.register(bot, OWNER)
     g = -1  # runs before the owner panel handlers in main.py
     bot.add_handler(CallbackQueryHandler(_cb, filters.regex(r"^(u|so):")), g)
     bot.add_handler(MessageHandler(_start, filters.private & ~OWNER & filters.command(["start", "menu"])), g)
@@ -113,6 +115,10 @@ async def _boot():
         await db.ensure_indexes()
     except Exception as e:
         lg(f"Index creation failed: {friendly_err(e)}", "⚠️")
+    try:
+        await tracker.load_bans()
+    except Exception as e:
+        lg(f"Ban list load failed: {friendly_err(e)}", "⚠️")
     await shop_user.reaper()
 
 
