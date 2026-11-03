@@ -200,9 +200,9 @@ async def stock_count(query: dict) -> int:
     return await stock_col.count_documents(query)
 
 
-async def account_countries() -> list[dict]:
-    """[{'_id': 'IN', 'name': 'India', 'n': 5}] for available accounts."""
-    pipe = [{"$match": {"kind": "account", "status": "available"}},
+async def account_countries(extra: dict | None = None) -> list[dict]:
+    """[{'_id': 'IN', 'name': 'India', 'n': 5}] for available accounts (optionally filtered, e.g. by tag)."""
+    pipe = [{"$match": {"kind": "account", "status": "available", **(extra or {})}},
             {"$group": {"_id": "$country", "name": {"$first": "$country_name"}, "n": {"$sum": 1}}},
             {"$sort": {"n": -1}}]
     return [x async for x in stock_col.aggregate(pipe)]
