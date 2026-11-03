@@ -86,3 +86,24 @@ async def set_counter(key: str, n: int):
 
 async def reset_counter(key: str):
     await counters_col.delete_one({"_id": key})
+
+
+# ---------------- UI (start pic + button emojis) ----------------
+async def get_ui() -> dict:
+    doc = await settings_col.find_one({"_id": "ui"}) or {}
+    doc.setdefault("start_pic", None)
+    doc.setdefault("emojis", {})
+    doc.setdefault("icons", True)
+    return doc
+
+
+async def set_ui(field: str, value):
+    await settings_col.update_one({"_id": "ui"}, {"$set": {field: value}}, upsert=True)
+
+
+async def unset_ui(field: str):
+    await settings_col.update_one({"_id": "ui"}, {"$unset": {field: ""}}, upsert=True)
+
+
+async def ping():
+    await _client.admin.command("ping")
