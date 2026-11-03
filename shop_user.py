@@ -86,8 +86,14 @@ def gate_view(miss: list[dict]):
 async def home_view(uid: int, name: str):
     u = await db.get_user(uid) or {}
     shop = await db.get_shop()
-    text = (f"🛍 **Welcome, {clean(name)}!**\n\n💰 Balance: **{money(u.get('balance', 0))}**\n"
-            "What would you like to do?")
+    n = await db.stock_count({"status": "available"})
+    text = (f"👋 **Hey {clean(name)}, welcome to the store!**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            f"💰 **Wallet:** {money(u.get('balance', 0))}\n"
+            f"📦 **Items in stock:** {n}\n"
+            "⚡ **Instant delivery** • 🔐 **Safe & private**\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "✨ Pick a category below to start 👇")
     upd = shop.get("update_link") or ""
     con = shop.get("contact") or ""
     rows = [
@@ -341,7 +347,7 @@ async def pay_screen(q: CallbackQuery, o: dict, shop: dict, bal: float | None = 
         pay.append(f"🏦 UPI: `{shop['upi']}`")
     if shop.get("qr"):
         pay.append("📷 Scan the QR code")
-    text = (f"💳 **Payment – Order #{o['_id']}**\n\n{KIND_ICON[o['kind']]} {clean(o['title'])}\n"
+    text = (f"💳 **Secure Checkout**\n\n{KIND_ICON[o['kind']]} {clean(o['title'])}\n"
             f"💰 Amount: **{money(o['price'])}**\n\n" + ("\n".join(pay) + "\n\n" if pay else "") +
             f"1. Pay exactly **{money(o['price'])}**\n2. Tap **✅ I have paid**, send screenshot / UTR\n\n"
             f"⏳ Unpaid orders are cancelled after {config.ORDER_TIMEOUT} min.")
@@ -362,7 +368,7 @@ async def orders_view(q: CallbackQuery):
     orders = await db.user_orders(q.from_user.id, 8)
     if not orders:
         return await show(q, "🧾 You have no orders yet.", [[B("🔙 Back", "u:home", D, "back")]])
-    rows = [[B(f"{order_line(o)[:40]} • {STATUS_TXT.get(o['status'], o['status'])[:14]}", f"u:ord:{o['_id']}", D)]
+    rows = [[B(f"{KIND_ICON.get(o['kind'], '')} {clean(o['title'])[:26]} • {money(o['price'])} • {STATUS_TXT.get(o['status'], o['status'])[:14]}", f"u:ord:{o['_id']}", D)]
             for o in orders]
     return await show(q, "🧾 **Your orders**", rows + [[B("🔙 Back", "u:home", D, "back")]])
 
@@ -378,7 +384,7 @@ async def order_view(q: CallbackQuery, oid: int):
     if st == "delivered":
         text, rows = await delivery_view(o)
         return await show(q, text, rows)
-    return await show(q, f"🧾 **Order #{oid}**\n{order_line(o)}\nStatus: {STATUS_TXT.get(st, st)}", [back])
+    return await show(q, f"🧾 **Order details**\n{KIND_ICON.get(o['kind'], '')} {clean(o['title'])} – {money(o['price'])}\nStatus: {STATUS_TXT.get(st, st)}", [back])
 
 
 async def order_action(q: CallbackQuery, act: str, oid: int):
@@ -400,7 +406,7 @@ async def order_action(q: CallbackQuery, act: str, oid: int):
         await db.set_order(oid, {"expires": db.now() + dt.timedelta(minutes=30)})
         SSTATE[uid] = {"step": "proof", "oid": oid}
         return await show(q, f"📸 Send the **payment screenshot** (photo) or the **UTR / transaction ID** as text.\n"
-                             f"Amount: **{money(o['price'])}** • Order #{oid}\n\n/cancel to stop",
+                             f"Amount: **{money(o['price'])}**\n\n/cancel to stop",
                           [[B("❌ Cancel order", f"u:cx:{oid}", R)]])
 
     if act == "bal":
@@ -462,7 +468,7 @@ async def user_input(m: Message, st: dict):
         if not o2:
             return await reply(m, "⌛ This order expired. Please order again.", [[B("🏠 Menu", "u:home", D)]])
         lg(f"Payment proof for order #{oid} from {who(m.from_user)}", "🧾")
-        await reply(m, f"✅ **Payment submitted** for order #{oid}.\nThe owner will verify it shortly – "
+        await reply(m, f"✅ **Payment submitted** \nThe owner will verify it shortly – "
                        "you'll get a message here as soon as it's approved.", [[B("🏠 Menu", "u:home", D)]])
         txt = (f"🧾 **New payment – Order #{oid}**\n\n👤 {who(m.from_user)}\n{order_line(o2)}"
                + (f"\n🔖 UTR: `{proof_txt}`" if proof_txt else ""))
@@ -513,7 +519,7 @@ async def delivery_view(o: dict):
     it = await db.get_stock(o["stock_id"]) or {}
     oid = o["_id"]
     if o["kind"] == "account":
-        text = (f"✅ **Order #{oid} approved!**\n\n📱 Number: `+{it.get('phone', '?')}`\n🔐 2FA password: `{_pw(it)}`\n\n"
+        text = (f"✅ **Payment approved – here is your item!**\n\n📱 Number: `+{it.get('phone', '?')}`\n🔐 2FA password: `{_pw(it)}`\n\n"
                 "**How to login**\n1️⃣ Open Telegram → add account → enter this number\n"
                 "2️⃣ Telegram sends a login code → tap **📩 Get OTP** and I send it to you with spaces\n"
                 "3️⃣ If asked, enter the 2FA password above\n"
@@ -524,7 +530,7 @@ async def delivery_view(o: dict):
     kind = "channel" if o["kind"] == "channel" else "group"
     link = o.get("link") or "(link missing – contact owner)"
     target = o.get("target") or o["user_id"]
-    text = (f"✅ **Order #{oid} approved!**\n\n{KIND_ICON[o['kind']]} **{clean(it.get('title') or o['title'])}**\n"
+    text = (f"✅ **Payment approved – here is your item!**\n\n{KIND_ICON[o['kind']]} **{clean(it.get('title') or o['title'])}**\n"
             f"🔗 Join here: {link}\n\nJoin the {kind}, then tap **✅ Yes, I joined**.\n"
             f"I will move the ownership to ID `{target}`.\n"
             "Want it on another account? Tap **🆔 Use another ID**.")
@@ -586,12 +592,12 @@ async def deliver(o: dict):
             text, rows = await delivery_view(o)
             await send(uid, text, rows)
         elif o["kind"] == "bot":
-            await send(uid, f"✅ **Order #{oid} approved!**\n\n🤖 Bot: @{it['bot_username']}\n"
+            await send(uid, f"✅ **Payment approved – here is your item!**\n\n🤖 Bot: @{it['bot_username']}\n"
                             f"🔑 Token: `{it['token']}`\n\n⚠️ Open @BotFather → /revoke to get a token only you know.",
                        [[B("🏠 Menu", "u:home", G)]])
             await complete_order(o)
         elif o["kind"] == "method":
-            await send(uid, f"✅ **Order #{oid} approved!**\n\n📚 **{clean(it['title'])}**\n\n{it['content']}",
+            await send(uid, f"✅ **Payment approved – here is your item!**\n\n📚 **{clean(it['title'])}**\n\n{it['content']}",
                        [[B("🏠 Menu", "u:home", G)]])
             await complete_order(o)
         lg(f"SOLD #{oid} | {order_line(o)} | buyer {uid} @{o.get('username') or '-'} | "
@@ -670,7 +676,7 @@ async def logout_flow(q: CallbackQuery, o: dict, force: bool):
                               [[B("📩 Get OTP", f"u:otp:{oid}", G)],
                                [B("Logout anyway", f"u:lof:{oid}", R)], [B("🔙 Back", f"u:ord:{oid}", D)]])
         await complete_order(o2)
-        return await show(q, f"🎉 **Done! Order #{oid} completed.**\nMy session is logged out – the account is only yours now.\n"
+        return await show(q, f"🎉 **Done! Purchase completed.**\nMy session is logged out – the account is only yours now.\n"
                              "Thanks for buying! 💚", back)
 
 
@@ -743,7 +749,7 @@ async def reaper():
                 if await cancel_order(o, "expired"):
                     lg(f"Order #{o['_id']} expired – item back in stock", "⌛")
                     try:
-                        await send(o["user_id"], f"⌛ Order #{o['_id']} expired because it wasn't paid in time. "
+                        await send(o["user_id"], f"⌛ Your order expired because it wasn't paid in time. "
                                                  "The item is back on sale – you can order again.",
                                    [[B("🏠 Menu", "u:home", D, "back")]])
                     except Exception:
