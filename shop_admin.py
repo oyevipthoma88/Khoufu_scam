@@ -19,6 +19,7 @@ from shop_core import (KIND_ICON, KIND_NAME, SSTATE, STATUS_TXT, B, D, G, P, R, 
                        friendly_err, lg, money, notify_owners, order_line, price_of, reply, send, show, who)
 import shop_core as core
 
+ADD_TAG: dict[int, str] = {}  # owner -> tag chosen for the accounts being added
 KINDS = ("account", "channel", "group", "bot", "method")
 BACK_HOME = [B("🔙 Shop Admin", "so:home", D, "back")]
 CANCEL_TXT = "\n\n/cancel to stop"
@@ -77,8 +78,12 @@ async def admin_cb(q: CallbackQuery):
     if act == "addk":
         kind = p[2]
         if kind == "account":
-            SSTATE[uid] = {"step": "lm", "purpose": "account"}
-            return await show(q, "📱 **Add account(s)** – how do you want to log in?", _lm_rows("so:add"))
+            return await show(q, "📱 **Add account(s)** – which type of account?\n\n"
+                                 "✅ **Normal** – clean account\n⚠️ **Scam Tag** – account has SCAM label\n"
+                                 "🎭 **Fake Tag** – account has FAKE label", [
+                [B("✅ Add Normal Account", "so:addt:normal", G, "t_normal")],
+                [B("⚠️ Add Scam Tag", "so:addt:scam", R, "t_scam"), B("🎭 Add Fake Tag", "so:addt:fake", P, "t_fake")],
+                [B("🔙 Back", "so:add", D, "back")]])
         if kind in ("channel", "group"):
             sellers = await db.all_sellers()
             rows = [[B(f"👤 {s['info'].get('name', s['_id'])[:25]} ({s['_id']})", f"so:sel:{kind}:{s['_id']}", P)]
@@ -94,6 +99,12 @@ async def admin_cb(q: CallbackQuery):
         if kind == "method":
             SSTATE[uid] = {"step": "m_title"}
             return await show(q, "📚 Send the **title** of the method." + CANCEL_TXT, [[B("🔙 Back", "so:add", D, "back")]])
+    if act == "addt":
+        tag = p[2] if p[2] in core.TAGS else "normal"
+        ADD_TAG[uid] = tag
+        SSTATE[uid] = {"step": "lm", "purpose": "account"}
+        return await show(q, f"📱 **Add {core.TAGS[tag]} account(s)** – how do you want to log in?",
+                          _lm_rows("so:addk:account"))
     if act == "seln":
         SSTATE[uid] = {"step": "lm", "purpose": p[2]}
         return await show(q, "👤 **New owner account** – how do you want to log in?\n\n"
@@ -259,7 +270,7 @@ async def admin_cb(q: CallbackQuery):
         return await show(q, "🧾 **Orders needing action**", rows + [BACK_HOME])
     if act == "ord":
         return await order_detail(q, int(p[2]))
-    if act in ("ap", "rj", "rd", "mc"):
+    if act in ("ap", "rj", "rd", "mc", "olo"):
         return await order_action(q, act, int(p[2]))
 
 
@@ -277,7 +288,7 @@ async def stock_list(q: CallbackQuery, kind: str, page: int):
     for it in items:
         tag = "🔒" if it["status"] == "reserved" else "🟢"
         if kind == "account":
-            name = f"+{it['phone']} {it.get('country', '')}"
+            name = f"+{it['phone']} {it.get('country', '')} {core.TAGS.get(it.get('tag') or 'normal', '')[:2]}"
         elif kind == "bot":
             name = f"@{it['bot_username']}"
         else:
@@ -345,6 +356,10 @@ async def order_action(q: CallbackQuery, act: str, oid: int):
     o = await db.get_order(oid)
     if not o:
         return await show(q, "Order not found.", back)
+    if act == "olo":
+        await db.set_order(oid, {"owner_logged_out": True, "owner_logout_at": db.now()})
+        lg(f"Order #{oid}: owner {who(q.from_user)} confirmed own device LOGGED OUT", "🔐")
+        return await show(q, f"🔐 Thanks! Order #{oid} – your device logout is recorded.", back)
     if act == "rd":
         if o["status"] not in ("approved", "delivered"):
             return await q.answer("Not in a deliverable state.", show_alert=True)
@@ -483,7 +498,7 @@ async def admin_input(m: Message, st: dict):
         price = _price_or_default(text)
         if price is None:
             return await m.reply("❌ Send a number or `-`." + CANCEL_TXT)
-        await db.add_stock({"kind": "bot", "token": st["token"], "bot_username": st["bot_username"],
+        await db.add_stock({"added_by": uid, "kind": "bot", "token": st["token"], "bot_username": st["bot_username"],
                             "title": f"@{st['bot_username']}", "price": price})
         SSTATE.pop(uid, None)
         lg(f"Bot added to stock: @{st['bot_username']}", "🤖")
@@ -506,7 +521,7 @@ async def admin_input(m: Message, st: dict):
         price = _price_or_default(text)
         if price is None:
             return await m.reply("❌ Send a number or `-`." + CANCEL_TXT)
-        await db.add_stock({"kind": "method", "title": st["title"], "desc": st["desc"], "content": st["content"],
+        await db.add_stock({"added_by": uid, "kind": "method", "title": st["title"], "desc": st["desc"], "content": st["content"],
                             "price": price})
         SSTATE.pop(uid, None)
         lg(f"Method added to stock: {st['title']}", "📚")
@@ -649,20 +664,23 @@ async def after_login(m: Message, purpose: str, docs: list[dict], pw: str | None
         return await reply(m, "❌ No valid session." + err_txt, [BACK_HOME])
     if purpose == "account":
         added, dup = [], []
+        tag = ADD_TAG.pop(uid, "normal")
         for d in docs:
             if await db.stock_col.find_one({"kind": "account", "uid": d["uid"], "status": {"$in": ["available", "reserved"]}}):
                 dup.append(d["phone"])
                 continue
             await db.add_stock({"kind": "account", "uid": d["uid"], "session": d["session"], "phone": d["phone"],
                                 "country": d["country"], "country_name": d["country_name"], "password": pw,
-                                "title": f"{d['country_name']} account", "tg_name": d["name"]})
-            added.append(f"{shop_tg.flag(d['country'])} +{d['phone']}")
-        lg(f"Accounts added to stock: {len(added)} ({', '.join(added)[:300]})", "📱")
+                                "title": f"{d['country_name']} account", "tg_name": d["name"], "tag": tag,
+                                "added_by": uid, "added_by_name": m.from_user.first_name or ""})
+            added.append(f"{shop_tg.flag(d['country'])} +{d['phone']} (TG id {d['uid']})")
+        lg(f"STOCK ADDED by {who(m.from_user)} | type: {core.TAGS[tag]} | {len(added)} account(s): "
+           f"{', '.join(added)[:500]}" + (f" | already in stock: {', '.join(dup)}" if dup else ""), "📱")
         shop = await db.get_shop()
         warn = ""
         if added and not any(price_of(shop, {"kind": "account", "country": d["country"]}) for d in docs):
             warn = "\n\n⚠️ No account price set yet – use 💰 Set Price or buyers can't purchase."
-        text = (f"✅ **{len(added)} account(s) added to stock**\n" + "\n".join(added) +
+        text = (f"✅ **{len(added)} {core.TAGS[tag]} account(s) added to stock**\n" + "\n".join(added) +
                 (f"\n\n♻️ Already in stock: {', '.join(dup)}" if dup else "") + err_txt + warn)
         return await reply(m, text, [[B("➕ Add more", "so:addk:account", G), B("💰 Prices", "so:price", P)], BACK_HOME])
     d = docs[0]
@@ -700,7 +718,7 @@ async def add_chats(m: Message, st: dict, text: str):
                         if await db.stock_col.find_one({"chat_id": info["chat_id"], "status": {"$in": ["available", "reserved"]}}):
                             bad.append(f"{info['title']} – already in stock")
                             break
-                        await db.add_stock({"kind": kind, "seller": sid, **info})
+                        await db.add_stock({"kind": kind, "seller": sid, "added_by": m.from_user.id, **info})
                         ok.append(info["title"])
                         break
                     except FloodWait as e:
