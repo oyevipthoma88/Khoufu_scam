@@ -1,6 +1,6 @@
 {
   "name": "Khoufu Account Manager Bot",
-  "description": "Owner-only Telegram bot: add accounts, auto-set profile and create public channels/groups.",
+  "description": "Telegram shop bot: sell accounts, channels, groups, bots & methods + owner account manager.",
   "repository": "https://github.com/oyevipthoma88/Khoufu_scam",
   "keywords": [
     "telegram",
@@ -68,6 +68,20 @@
     "MAX_FLOOD_WAIT": {
       "description": "Skip a step if Telegram asks to wait longer than this (seconds)",
       "value": "900",
+      "required": false
+    },
+    "CURRENCY": {
+      "description": "Currency symbol shown to buyers",
+      "value": "₹",
+      "required": false
+    },
+    "ORDER_TIMEOUT": {
+      "description": "Minutes before an unpaid order is cancelled",
+      "value": "15",
+      "required": false
+    },
+    "FORCE_JOIN": {
+      "description": "Optional must-join channels (usernames or -100 ids, space separated). Can also be set in the bot.",
       "required": false
     }
   }

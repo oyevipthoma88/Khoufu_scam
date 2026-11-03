@@ -34,6 +34,15 @@ MAX_FLOOD_WAIT = int(os.environ.get("MAX_FLOOD_WAIT", "900"))
 USERNAME_TRIES = int(os.environ.get("USERNAME_TRIES", "300"))
 
 
+# ---------------- shop
+CURRENCY = os.environ.get("CURRENCY", "₹")
+# Unpaid orders are cancelled (and the item goes back to stock) after this many minutes
+ORDER_TIMEOUT = max(3, int(os.environ.get("ORDER_TIMEOUT", "15")))
+# Optional: must-join channels from env (usernames or -100 ids, space separated).
+# Owners can also manage them inside the bot (Shop Admin -> Must-Join).
+FORCE_JOIN = os.environ.get("FORCE_JOIN", "").replace(",", " ").split()
+
+
 def check():
     missing = [k for k, v in {
         "API_ID": API_ID, "API_HASH": API_HASH, "BOT_TOKEN": BOT_TOKEN,

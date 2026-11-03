@@ -18,6 +18,8 @@ from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMa
 import config
 import database as db
 import logchan
+import shop
+import ui
 import userbot
 from logchan import NOPREV
 
@@ -29,6 +31,8 @@ config.check()
 
 bot = Client("khoufu_bot", api_id=config.API_ID, api_hash=config.API_HASH,
              bot_token=config.BOT_TOKEN, in_memory=True)
+ui.bind(bot)
+shop.register(bot)
 
 OWNER = filters.user(config.OWNER_IDS)
 STATE: dict[int, dict] = {}  # per-owner conversation state
@@ -65,42 +69,7 @@ Same username can't be used twice, so the bot tries `name`, `name1`, `name2`… 
 ⚠️ Telegram allows only a limited number of public links per account. Extra ones stay private with an invite link."""
 
 
-# ------------------------------------------------------------ buttons (colour + premium emoji)
-# Each button spec: (text, callback_data, style, emoji_key)
-G, R, P, D = ButtonStyle.SUCCESS, ButtonStyle.DANGER, ButtonStyle.PRIMARY, ButtonStyle.DEFAULT
-EMOJI_KEYS = {
-    "add": "➕ Add Account", "accs": "👤 My Accounts", "custom": "⚙️ Custom", "tut": "📖 Tutorial",
-    "apply": "🚀 Apply", "auto": "🤖 Auto", "links": "🔗 Links", "status": "📊 Status",
-    "back": "🔙 Back", "yes": "✅ Yes", "no": "❌ No", "reset": "♻️ Reset", "remove": "🗑 Remove",
-    "owner": "👑 Owner Panel", "edit": "✏️ Edit fields",
-}
-UI = {"emojis": {}, "icons": True, "start_pic": None}
-
-
-def B(text: str, data: str, style: ButtonStyle = D, key: str | None = None) -> tuple:
-    return (text, data, style, key)
-
-
-def build(rows, icons: bool | None = None) -> M:
-    icons = UI["icons"] if icons is None else icons
-    out = []
-    for row in rows:
-        r = []
-        for b in row:
-            if isinstance(b, InlineKeyboardButton):
-                r.append(b)
-                continue
-            text, data, style, key = b
-            eid = UI["emojis"].get(key) if (icons and key) else None
-            if eid is not None and not str(eid).isdigit():
-                eid = None  # broken/old value in DB (e.g. 'add') – ignore instead of crashing
-            if eid:
-                # premium icon replaces the plain emoji at the start of the label
-                text = text.split(" ", 1)[1] if " " in text and not text[0].isalnum() else text
-            r.append(InlineKeyboardButton(text, icon_custom_emoji_id=str(eid) if eid else None,
-                                          style=style, callback_data=data))
-        out.append(r)
-    return M(out)
+from ui import (B, BACK, D, EMOJI_KEYS, G, P, R, UI, back, build, edit, reply, safe_send, send)
 
 
 def main_kb(auto: bool) -> list:
@@ -109,40 +78,9 @@ def main_kb(auto: bool) -> list:
         [B("⚙️ Custom", "custom", P, "custom"), B("📖 Tutorial", "tut", D, "tut")],
         [B("🚀 Apply All", "apply_all", G, "apply"), B(f"🤖 Auto: {'ON' if auto else 'OFF'}", "auto", G if auto else R, "auto")],
         [B("🔗 All Links", "links_all", P, "links"), B("📊 Status", "status", D, "status")],
+        [B("🛍 Shop Admin", "so:home", G, "shopadm"), B("🛒 User View", "u:home", P, "shopusr")],
         [B("👑 Owner Panel", "owner", P, "owner")],
     ]
-
-
-BACK = [B("🔙 Back", "home", D, "back")]
-
-
-def back(to: str) -> list:
-    return [B("🔙 Back", to, D, "back")]
-
-
-async def safe_send(coro_factory):
-    """Send with premium icons; if Telegram rejects them, retry once without and remember."""
-    try:
-        return await coro_factory(None)
-    except MessageNotModified:
-        return None
-    except (BadRequest, ValueError) as e:
-        if not UI["icons"] or not UI["emojis"]:
-            raise
-        log.warning("Button icons rejected (%s) – disabling icons", e)
-        UI["icons"] = False
-        await db.set_ui("icons", False)
-        return await coro_factory(False)
-
-
-async def reply(m: Message, text: str, rows=None):
-    return await safe_send(lambda ic: m.reply(text, reply_markup=build(rows, ic) if rows else None,
-                                              link_preview_options=NOPREV))
-
-
-async def send(chat_id: int, text: str, rows=None):
-    return await safe_send(lambda ic: bot.send_message(chat_id, text, reply_markup=build(rows, ic) if rows else None,
-                                                       link_preview_options=NOPREV))
 
 
 async def home_text() -> str:
@@ -287,17 +225,8 @@ def parse_id(text: str) -> int | None:
 
 
 # ------------------------------------------------------------ commands
-@bot.on_message(filters.private & ~OWNER)
-async def not_owner(_, m: Message):
-    await m.reply("🔒 This is a private bot.")
-
-
-@bot.on_callback_query(~OWNER)
-async def not_owner_cb(_, q: CallbackQuery):
-    await q.answer("🔒 Private bot", show_alert=True)
-
-
 async def drop_state(uid: int):
+    await shop.clear_state(uid)
     st = STATE.pop(uid, None)
     if st and st.get("client"):
         try:
@@ -319,27 +248,7 @@ async def cancel(_, m: Message):
 
 
 # ------------------------------------------------------------ callbacks
-async def edit(q: CallbackQuery, text: str, rows):
-    msg = q.message
-    if msg.photo:  # can't turn a photo message into text – send a fresh one
-        if len(text) <= 1000:
-            try:
-                return await safe_send(lambda ic: msg.edit_caption(text, reply_markup=build(rows, ic)))
-            except Exception:
-                pass
-        try:
-            await msg.delete()
-        except Exception:
-            pass
-        return await send(msg.chat.id, text, rows)
-    try:
-        return await safe_send(lambda ic: msg.edit_text(text, reply_markup=build(rows, ic),
-                                                        link_preview_options=NOPREV))
-    except Exception:
-        return await send(msg.chat.id, text, rows)
-
-
-@bot.on_callback_query(OWNER)
+@bot.on_callback_query(OWNER & ~filters.regex(r"^(u|so):"))
 async def callbacks(_, q: CallbackQuery):
     try:
         await q.answer()
@@ -348,6 +257,7 @@ async def callbacks(_, q: CallbackQuery):
     except Exception:
         pass
     try:
+        await shop.clear_state(q.from_user.id)  # leaving the shop flow
         await handle_cb(q)
     except Exception as e:
         log.exception("callback %s failed", q.data)
@@ -843,6 +753,7 @@ async def main():
     me = await bot.get_me()
     log.info("Bot started as @%s – owners: %s", me.username, config.OWNER_IDS)
     asyncio.create_task(expire_logins())
+    shop.start_background()
     logchan.push(f"Bot started as @{me.username}", "🟢")
     for oid in config.OWNER_IDS:
         try:

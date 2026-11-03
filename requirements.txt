@@ -2,3 +2,4 @@ kurigram==2.2.26
 TgCrypto-pyrofork
 motor==3.6.0
 dnspython
+phonenumbers
