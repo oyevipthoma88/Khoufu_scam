@@ -11,7 +11,9 @@ from pyrogram.errors import (
     PhoneNumberInvalid,
     SessionPasswordNeeded,
 )
-from pyrogram.types import CallbackQuery, InlineKeyboardButton as B, InlineKeyboardMarkup as M, Message
+from pyrogram.enums import ButtonStyle, MessageEntityType
+from pyrogram.errors import BadRequest, FloodWait, MessageNotModified, QueryIdInvalid
+from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup as M, Message
 
 import config
 import database as db
@@ -53,39 +55,137 @@ Same username can't be used twice, so the bot tries `name`, `name1`, `name2`… 
 **5. My Accounts**
 • See all accounts, tap ♻️ to reset: old name, bio, photo, username come back and channels/groups get random names. You get all links at once.
 
+**6. Owner Panel**
+• 🖼 Set a start picture (saved forever in database)
+• ✨ Button Emojis: tap a button, send any premium emoji → it becomes that button's icon
+• 🎨 Icons ON/OFF switch
+
 ⚠️ Telegram allows only a limited number of public links per account. Extra ones stay private with an invite link."""
 
 
-def main_kb(auto: bool) -> M:
-    return M([
-        [B("➕ Add Account", "add"), B("👤 My Accounts", "accs")],
-        [B("⚙️ Custom", "custom"), B("📖 Tutorial", "tut")],
-        [B("🚀 Apply All", "apply_all"), B(f"🤖 Auto: {'ON' if auto else 'OFF'}", "auto")],
-        [B("🔗 All Links", "links_all"), B("📊 Status", "status")],
-    ])
+# ------------------------------------------------------------ buttons (colour + premium emoji)
+# Each button spec: (text, callback_data, style, emoji_key)
+G, R, P, D = ButtonStyle.SUCCESS, ButtonStyle.DANGER, ButtonStyle.PRIMARY, ButtonStyle.DEFAULT
+EMOJI_KEYS = {
+    "add": "➕ Add Account", "accs": "👤 My Accounts", "custom": "⚙️ Custom", "tut": "📖 Tutorial",
+    "apply": "🚀 Apply", "auto": "🤖 Auto", "links": "🔗 Links", "status": "📊 Status",
+    "back": "🔙 Back", "yes": "✅ Yes", "no": "❌ No", "reset": "♻️ Reset", "remove": "🗑 Remove",
+    "owner": "👑 Owner Panel", "edit": "✏️ Edit fields",
+}
+UI = {"emojis": {}, "icons": True, "start_pic": None}
 
 
-BACK = [B("🔙 Back", "home")]
+def B(text: str, data: str, style: ButtonStyle = D, key: str | None = None) -> tuple:
+    return (text, data, style, key)
+
+
+def build(rows, icons: bool | None = None) -> M:
+    icons = UI["icons"] if icons is None else icons
+    out = []
+    for row in rows:
+        r = []
+        for b in row:
+            if isinstance(b, InlineKeyboardButton):
+                r.append(b)
+                continue
+            text, data, style, key = b
+            eid = UI["emojis"].get(key) if (icons and key) else None
+            if eid:
+                # premium icon replaces the plain emoji at the start of the label
+                text = text.split(" ", 1)[1] if " " in text and not text[0].isalnum() else text
+            r.append(InlineKeyboardButton(text, icon_custom_emoji_id=str(eid) if eid else None,
+                                          style=style, callback_data=data))
+        out.append(r)
+    return M(out)
+
+
+def main_kb(auto: bool) -> list:
+    return [
+        [B("➕ Add Account", "add", G, "add"), B("👤 My Accounts", "accs", P, "accs")],
+        [B("⚙️ Custom", "custom", P, "custom"), B("📖 Tutorial", "tut", D, "tut")],
+        [B("🚀 Apply All", "apply_all", G, "apply"), B(f"🤖 Auto: {'ON' if auto else 'OFF'}", "auto", G if auto else R, "auto")],
+        [B("🔗 All Links", "links_all", P, "links"), B("📊 Status", "status", D, "status")],
+        [B("👑 Owner Panel", "owner", P, "owner")],
+    ]
+
+
+BACK = [B("🔙 Back", "home", D, "back")]
+
+
+def back(to: str) -> list:
+    return [B("🔙 Back", to, D, "back")]
+
+
+async def safe_send(coro_factory):
+    """Send with premium icons; if Telegram rejects them, retry once without and remember."""
+    try:
+        return await coro_factory(None)
+    except MessageNotModified:
+        return None
+    except (BadRequest, ValueError) as e:
+        if not UI["icons"] or not UI["emojis"]:
+            raise
+        log.warning("Button icons rejected (%s) – disabling icons", e)
+        UI["icons"] = False
+        await db.set_ui("icons", False)
+        return await coro_factory(False)
+
+
+async def reply(m: Message, text: str, rows=None):
+    return await safe_send(lambda ic: m.reply(text, reply_markup=build(rows, ic) if rows else None,
+                                              disable_web_page_preview=True))
+
+
+async def send(chat_id: int, text: str, rows=None):
+    return await safe_send(lambda ic: bot.send_message(chat_id, text, reply_markup=build(rows, ic) if rows else None,
+                                                       disable_web_page_preview=True))
+
+
+async def home_text() -> str:
+    n = len(await db.all_accounts())
+    busy = "🟡 working" if userbot.JOB_LOCK.locked() else "🟢 idle"
+    return f"👋 **Welcome, owner!**\n\nAccounts added: **{n}**\nBot: {busy}\nChoose an option:"
+
+
+async def send_home(chat_id: int):
+    s = await db.get_settings()
+    text, rows = await home_text(), main_kb(s["auto"])
+    if UI["start_pic"]:
+        try:
+            return await safe_send(lambda ic: bot.send_photo(chat_id, UI["start_pic"], caption=text,
+                                                             reply_markup=build(rows, ic)))
+        except Exception as e:
+            log.warning("start pic failed: %s", e)
+    return await send(chat_id, text, rows)
 
 
 # ------------------------------------------------------------ progress reporter
 class Reporter:
-    def __init__(self, msg: Message):
-        self.msg, self.lines, self.last = msg, [], 0.0
+    def __init__(self, msg: Message | None, chat_id: int):
+        self.msg, self.chat_id, self.lines, self.last = msg, chat_id, [], 0.0
 
     async def __call__(self, line: str):
         log.info(line)
-        self.lines.append(line)
+        self.lines.append(str(line)[:300])
         if time.time() - self.last > 3:
             await self.flush()
 
-    async def flush(self):
+    async def flush(self, done: bool = False):
         self.last = time.time()
+        head = "✅ **Done**" if done else "⏳ **Working…**"
+        text = head + "\n\n" + "\n".join(self.lines[-20:])
         try:
-            await self.msg.edit_text("⏳ **Working…**\n\n" + "\n".join(self.lines[-20:]),
-                                     disable_web_page_preview=True)
-        except Exception:
+            if self.msg:
+                await self.msg.edit_text(text[:4000], disable_web_page_preview=True)
+        except MessageNotModified:
             pass
+        except FloodWait as e:
+            self.last = time.time() + e.value
+        except Exception:
+            try:
+                self.msg = await bot.send_message(self.chat_id, text[:4000], disable_web_page_preview=True)
+            except Exception:
+                pass
 
 
 async def send_long(chat_id: int, header: str, lines: list[str]):
@@ -99,23 +199,53 @@ async def send_long(chat_id: int, header: str, lines: list[str]):
 
 
 async def run_job(chat_id: int, title: str, ids: list[int], fn):
-    """Background job over many accounts (queued, one at a time)."""
-    msg = await bot.send_message(chat_id, f"⏳ {title} queued…")
-    rep = Reporter(msg)
-    all_links: list[str] = []
-    async with userbot.JOB_LOCK:
-        for acc_id in ids:
-            try:
-                links = await fn(acc_id, rep)
-                acc = await db.get_account(acc_id)
-                head = f"\n**{acc.get('info', {}).get('name', acc_id)}** ({acc_id})"
-                all_links += [head] + links
-            except Exception as e:
-                log.exception("job failed")
-                await rep(f"❌ {acc_id}: {e}")
-    await rep(f"✅ {title} finished")
-    await rep.flush()
-    await send_long(chat_id, f"🔗 **{title} – links**", all_links)
+    """Background job over many accounts (queued, one at a time). Never crashes the bot."""
+    try:
+        queued = " (waiting for running job)" if userbot.JOB_LOCK.locked() else ""
+        msg = await bot.send_message(chat_id, f"⏳ {title} queued{queued}…")
+        rep = Reporter(msg, chat_id)
+        all_links: list[str] = []
+        ok = fail = 0
+        async with userbot.JOB_LOCK:
+            for i, acc_id in enumerate(ids, 1):
+                await rep(f"— [{i}/{len(ids)}] account {acc_id}")
+                try:
+                    links = await fn(acc_id, rep)
+                    acc = await db.get_account(acc_id) or {}
+                    head = f"\n**{acc.get('info', {}).get('name', acc_id)}** ({acc_id})"
+                    all_links += [head] + (links or [])
+                    ok += 1
+                except Exception as e:
+                    log.exception("job failed for %s", acc_id)
+                    await rep(f"❌ {acc_id}: {friendly(e)}")
+                    fail += 1
+        await rep(f"🏁 {title} finished – ✅ {ok}  ❌ {fail}")
+        await rep.flush(done=True)
+        await send_long(chat_id, f"🔗 **{title} – links**", all_links)
+        await send(chat_id, "What next?", [[B("🏠 Main Menu", "home", P, "back")]])
+    except Exception as e:
+        log.exception("run_job crashed")
+        try:
+            await bot.send_message(chat_id, f"⚠️ {title} stopped: {friendly(e)}")
+        except Exception:
+            pass
+
+
+def friendly(e: Exception) -> str:
+    name = e.__class__.__name__
+    msg = str(e) or name
+    if isinstance(e, FloodWait):
+        return f"Telegram flood limit – wait {e.value}s and try again"
+    if "AUTH_KEY" in msg or "SESSION_REVOKED" in msg or "USER_DEACTIVATED" in msg:
+        return "Session expired / account logged out – remove it and add again"
+    return msg[:300]
+
+
+def parse_id(text: str) -> int | None:
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
 
 
 # ------------------------------------------------------------ commands
@@ -129,87 +259,176 @@ async def not_owner_cb(_, q: CallbackQuery):
     await q.answer("🔒 Private bot", show_alert=True)
 
 
-@bot.on_message(filters.private & OWNER & filters.command(["start", "menu"]))
-async def start(_, m: Message):
-    STATE.pop(m.from_user.id, None)
-    s = await db.get_settings()
-    n = len(await db.all_accounts())
-    await m.reply(f"👋 **Welcome, owner!**\n\nAccounts added: **{n}**\nChoose an option:",
-                  reply_markup=main_kb(s["auto"]))
-
-
-@bot.on_message(filters.private & OWNER & filters.command("cancel"))
-async def cancel(_, m: Message):
-    st = STATE.pop(m.from_user.id, None)
+async def drop_state(uid: int):
+    st = STATE.pop(uid, None)
     if st and st.get("client"):
         try:
             await st["client"].disconnect()
         except Exception:
             pass
-    await m.reply("❌ Cancelled.", reply_markup=M([BACK]))
+
+
+@bot.on_message(filters.private & OWNER & filters.command(["start", "menu"]))
+async def start(_, m: Message):
+    await drop_state(m.from_user.id)
+    await send_home(m.chat.id)
+
+
+@bot.on_message(filters.private & OWNER & filters.command("cancel"))
+async def cancel(_, m: Message):
+    await drop_state(m.from_user.id)
+    await reply(m, "❌ Cancelled.", [BACK])
 
 
 # ------------------------------------------------------------ callbacks
-async def edit(q: CallbackQuery, text: str, kb):
+async def edit(q: CallbackQuery, text: str, rows):
+    msg = q.message
+    if msg.photo:  # can't turn a photo message into text – send a fresh one
+        if len(text) <= 1000:
+            try:
+                return await safe_send(lambda ic: msg.edit_caption(text, reply_markup=build(rows, ic)))
+            except Exception:
+                pass
+        try:
+            await msg.delete()
+        except Exception:
+            pass
+        return await send(msg.chat.id, text, rows)
     try:
-        await q.message.edit_text(text, reply_markup=M(kb) if isinstance(kb, list) else kb,
-                                  disable_web_page_preview=True)
+        return await safe_send(lambda ic: msg.edit_text(text, reply_markup=build(rows, ic),
+                                                        disable_web_page_preview=True))
     except Exception:
-        await q.message.reply(text, reply_markup=M(kb) if isinstance(kb, list) else kb)
+        return await send(msg.chat.id, text, rows)
 
 
 @bot.on_callback_query(OWNER)
 async def callbacks(_, q: CallbackQuery):
-    d, uid = q.data, q.from_user.id
-    await q.answer()
+    try:
+        await q.answer()
+    except QueryIdInvalid:
+        pass
+    except Exception:
+        pass
+    try:
+        await handle_cb(q)
+    except Exception as e:
+        log.exception("callback %s failed", q.data)
+        try:
+            await send(q.message.chat.id, f"⚠️ **Error:** {friendly(e)}", [BACK])
+        except Exception:
+            pass
+
+
+async def handle_cb(q: CallbackQuery):
+    d, uid = q.data or "", q.from_user.id
 
     if d == "home":
-        STATE.pop(uid, None)
+        await drop_state(uid)
         s = await db.get_settings()
-        n = len(await db.all_accounts())
-        return await edit(q, f"🏠 **Main Menu**\n\nAccounts added: **{n}**", main_kb(s["auto"]))
+        if UI["start_pic"]:
+            try:
+                await q.message.delete()
+            except Exception:
+                pass
+            return await send_home(q.message.chat.id)
+        return await edit(q, await home_text(), main_kb(s["auto"]))
 
     if d == "tut":
         return await edit(q, TUTORIAL, [BACK])
 
     if d == "auto":
         on = await db.toggle_auto()
-        return await edit(q, f"🤖 Auto apply is now **{'ON' if on else 'OFF'}**", main_kb(on))
+        return await edit(q, f"🤖 Auto apply is now **{'ON' if on else 'OFF'}**\n\n" + await home_text(), main_kb(on))
 
     if d == "status":
         s = await db.get_settings()
         accs = await db.all_accounts()
         busy = "🟡 busy" if userbot.JOB_LOCK.locked() else "🟢 idle"
-        lines = [f"📊 **Status** – {busy}", f"Accounts: {len(accs)}", f"Auto apply: {s['auto']}", ""]
+        lines = [f"📊 **Status** – {busy}", f"Accounts: {len(accs)}",
+                 f"Applied: {sum(1 for a in accs if a.get('applied'))}",
+                 f"Auto apply: {'ON' if s['auto'] else 'OFF'}",
+                 f"Start pic: {'✅' if UI['start_pic'] else '❌'} | Premium icons: {len(UI['emojis'])} "
+                 f"({'on' if UI['icons'] else 'off'})", ""]
         for k in db.KINDS:
             lines.append(f"**{KIND_LABEL[k]}**: " + ", ".join(
                 f"{FIELD_LABEL[f]} {'✅' if s[k].get(f) else '❌'}" for f in db.FIELDS))
-        return await edit(q, "\n".join(lines), [BACK])
+        return await edit(q, "\n".join(lines), [[B("🔄 Refresh", "status", P)], BACK])
+
+    # ---- owner panel
+    if d == "owner":
+        return await edit(q, "👑 **Owner Panel**\n\n"
+                             f"🖼 Start pic: {'set ✅' if UI['start_pic'] else 'not set'}\n"
+                             f"✨ Premium button icons: {len(UI['emojis'])} set "
+                             f"({'enabled' if UI['icons'] else 'disabled'})", [
+            [B("🖼 Set Start Pic", "op:pic", G), B("🗑 Remove Pic", "op:picdel", R)],
+            [B("✨ Button Emojis", "op:emo", P)],
+            [B(f"🎨 Icons: {'ON' if UI['icons'] else 'OFF'}", "op:icons", G if UI['icons'] else R)],
+            BACK,
+        ])
+    if d == "op:pic":
+        STATE[uid] = {"step": "start_pic"}
+        return await edit(q, "🖼 Send the **photo** for the /start menu.\nIt is saved in the database permanently.\n\n/cancel to stop", [back("owner")])
+    if d == "op:picdel":
+        UI["start_pic"] = None
+        await db.unset_ui("start_pic")
+        return await edit(q, "🗑 Start pic removed.", [back("owner")])
+    if d == "op:icons":
+        UI["icons"] = not UI["icons"]
+        await db.set_ui("icons", UI["icons"])
+        q.data = "owner"
+        return await handle_cb(q)
+    if d == "op:emo":
+        rows, row = [], []
+        for k, label in EMOJI_KEYS.items():
+            row.append(B(f"{'✅' if UI['emojis'].get(k) else '➖'} {label}", f"emo:{k}", G if UI['emojis'].get(k) else D))
+            if len(row) == 2:
+                rows.append(row); row = []
+        if row:
+            rows.append(row)
+        rows += [[B("🗑 Clear all icons", "emo!clear", R)], back("owner")]
+        return await edit(q, "✨ **Premium Button Emojis**\nTap a button, then send a premium (custom) emoji "
+                             "or its numeric ID. It becomes the icon of that button.", rows)
+    if d == "emo!clear":
+        UI["emojis"] = {}
+        await db.set_ui("emojis", {})
+        return await edit(q, "🗑 All button icons cleared.", [back("op:emo")])
+    if d.startswith("emo:"):
+        key = d[4:]
+        if key not in EMOJI_KEYS:
+            return
+        STATE[uid] = {"step": "emoji", "key": key}
+        return await edit(q, f"✨ Send a **premium emoji** (or its ID) for **{EMOJI_KEYS[key]}**.\n"
+                             "Send `0` to remove it.\n\n/cancel to stop", [back("op:emo")])
 
     # ---- custom panel
     if d == "custom":
         return await edit(q, "⚙️ **Custom Panel**\nWhat do you want to set?", [
-            [B("👤 Set User", "k:user")],
-            [B("📢 Set Channel", "k:channel")],
-            [B("👥 Set Group", "k:group")],
+            [B("👤 Set User", "k:user", P)],
+            [B("📢 Set Channel", "k:channel", P)],
+            [B("👥 Set Group", "k:group", P)],
             BACK,
         ])
 
     if d.startswith("k:"):
         kind = d[2:]
+        if kind not in db.KINDS:
+            return
         s = (await db.get_settings())[kind]
         view = "\n".join(
             f"• {FIELD_LABEL[f]}: " + ("🖼 set" if f == "pfp" and s.get(f) else f"`{s.get(f)}`" if s.get(f) else "—")
             for f in db.FIELDS)
         return await edit(q, f"{KIND_LABEL[kind]} **settings**\n\n{view}", [
-            [B("✏️ Set Name", f"f:{kind}:name"), B("📝 Set Bio", f"f:{kind}:bio")],
-            [B("🖼 Set PFP", f"f:{kind}:pfp"), B("🔤 Set Username", f"f:{kind}:username")],
-            [B("🗑 Clear all", f"clr:{kind}")],
-            [B("🔙 Back", "custom")],
+            [B("✏️ Set Name", f"f:{kind}:name", P, "edit"), B("📝 Set Bio", f"f:{kind}:bio", P)],
+            [B("🖼 Set PFP", f"f:{kind}:pfp", P), B("🔤 Set Username", f"f:{kind}:username", P)],
+            [B("🗑 Clear all", f"clr:{kind}", R, "remove")],
+            back("custom"),
         ])
 
     if d.startswith("f:"):
-        _, kind, field = d.split(":")
+        parts = d.split(":")
+        if len(parts) != 3 or parts[1] not in db.KINDS or parts[2] not in db.FIELDS:
+            return
+        _, kind, field = parts
         STATE[uid] = {"step": "field", "kind": kind, "field": field}
         hint = {
             "name": "Send the new **name**." + (" Use `{n}` for numbers." if kind != "user" else ""),
@@ -217,18 +436,21 @@ async def callbacks(_, q: CallbackQuery):
             "pfp": "Send the **photo** to use.",
             "username": "Send the base **username** (without @). Bot will try name, name1, name2…",
         }[field]
-        return await edit(q, f"{KIND_LABEL[kind]} → {hint}\n\n/cancel to stop", [[B("🔙 Back", f"k:{kind}")]])
+        return await edit(q, f"{KIND_LABEL[kind]} → {hint}\n\n/cancel to stop", [back(f"k:{kind}")])
 
     if d.startswith("clr:"):
         kind = d[4:]
+        if kind not in db.KINDS:
+            return
         await db.clear_kind(kind)
-        return await edit(q, f"🗑 {KIND_LABEL[kind]} settings cleared.", [[B("🔙 Back", f"k:{kind}")]])
+        return await edit(q, f"🗑 {KIND_LABEL[kind]} settings cleared.", [back(f"k:{kind}")])
 
     # ---- add account
     if d == "add":
+        await drop_state(uid)
         return await edit(q, "➕ **Add Account**\nHow do you want to log in?", [
-            [B("🔑 String Session", "add:str")],
-            [B("📱 Phone Login", "add:phone")],
+            [B("🔑 String Session", "add:str", G)],
+            [B("📱 Phone Login", "add:phone", G)],
             BACK,
         ])
     if d == "add:str":
@@ -236,40 +458,44 @@ async def callbacks(_, q: CallbackQuery):
         return await edit(q, "🔑 Send the **string session** (Pyrogram or Telethon).\n\n/cancel to stop", [BACK])
     if d == "add:phone":
         STATE[uid] = {"step": "phone"}
-        return await edit(q, "📱 Send the **phone number** with country code, e.g. `+919876543210`\n\n/cancel to stop",
-                          [BACK])
+        return await edit(q, "📱 Send the **phone number** with country code, e.g. `+919876543210`\n\n/cancel to stop", [BACK])
 
     # ---- accounts
     if d == "accs":
         accs = await db.all_accounts()
         if not accs:
-            return await edit(q, "No accounts yet.", [[B("➕ Add Account", "add")], BACK])
-        kb = []
-        for a in accs:
+            return await edit(q, "No accounts yet.", [[B("➕ Add Account", "add", G, "add")], BACK])
+        rows = []
+        for a in accs[:40]:
             info = a.get("info", {})
-            label = info.get("name", str(a["_id"]))[:20]
+            label = str(info.get("name") or a["_id"])[:20]
             mark = "✅" if a.get("applied") else "⏸"
-            kb.append([B(f"{mark} {label}", f"acc:{a['_id']}"), B("♻️ Reset", f"rst?:{a['_id']}")])
-        kb += [[B("♻️ Reset All", "rst?:all"), B("🔗 All Links", "links_all")], BACK]
-        return await edit(q, f"👤 **My Accounts** ({len(accs)})\n✅ applied  ⏸ not applied", kb)
+            rows.append([B(f"{mark} {label}", f"acc:{a['_id']}", P), B("♻️ Reset", f"rst?:{a['_id']}", R, "reset")])
+        rows += [[B("♻️ Reset All", "rst?:all", R, "reset"), B("🔗 All Links", "links_all", P, "links")], BACK]
+        more = f"\n(showing first 40 of {len(accs)})" if len(accs) > 40 else ""
+        return await edit(q, f"👤 **My Accounts** ({len(accs)})\n✅ applied  ⏸ not applied{more}", rows)
 
     if d.startswith("acc:"):
-        a = await db.get_account(int(d[4:]))
+        acc_id = parse_id(d[4:])
+        a = await db.get_account(acc_id) if acc_id else None
         if not a:
-            return await edit(q, "Account not found.", [BACK])
+            return await edit(q, "Account not found.", [back("accs")])
         info = a.get("info", {})
         ch = a.get("chats", {})
         text = (f"👤 **{info.get('name')}**\nID: `{a['_id']}`\nUsername: @{info.get('username') or '—'}\n"
                 f"Phone: {info.get('phone') or '—'}\n"
                 f"Channels: {len(ch.get('channel', []))} | Groups: {len(ch.get('group', []))}")
         return await edit(q, text, [
-            [B("🚀 Apply", f"ap:{a['_id']}"), B("♻️ Reset", f"rst?:{a['_id']}")],
-            [B("🔗 Links", f"lk:{a['_id']}"), B("❌ Remove", f"rm?:{a['_id']}")],
-            [B("🔙 Back", "accs")],
+            [B("🚀 Apply", f"ap:{a['_id']}", G, "apply"), B("♻️ Reset", f"rst?:{a['_id']}", R, "reset")],
+            [B("🔗 Links", f"lk:{a['_id']}", P, "links"), B("🗑 Remove", f"rm?:{a['_id']}", R, "remove")],
+            back("accs"),
         ])
 
     if d.startswith("lk:"):
-        a = await db.get_account(int(d[3:]))
+        acc_id = parse_id(d[3:])
+        a = await db.get_account(acc_id) if acc_id else None
+        if not a:
+            return await edit(q, "Account not found.", [back("accs")])
         return await send_long(uid, f"🔗 **Links – {a.get('info', {}).get('name')}**", userbot.account_links(a))
 
     if d == "links_all":
@@ -280,14 +506,20 @@ async def callbacks(_, q: CallbackQuery):
         return await send_long(uid, "🔗 **All Links**", lines)
 
     if d.startswith("ap:"):
-        acc_id = int(d[3:])
+        acc_id = parse_id(d[3:])
+        if not acc_id or not await db.get_account(acc_id):
+            return await edit(q, "Account not found.", [back("accs")])
         asyncio.create_task(run_job(uid, "Apply", [acc_id], userbot.apply_account))
         return await edit(q, "🚀 Apply started. Progress below 👇", [BACK])
 
     if d == "apply_all":
         ids = [a["_id"] for a in await db.all_accounts()]
         if not ids:
-            return await edit(q, "No accounts yet.", [BACK])
+            return await edit(q, "No accounts yet.", [[B("➕ Add Account", "add", G, "add")], BACK])
+        s = await db.get_settings()
+        if not any(s[k] for k in db.KINDS):
+            return await edit(q, "⚠️ Nothing to apply – set name/bio/pfp/username in ⚙️ Custom first.",
+                              [[B("⚙️ Custom", "custom", P, "custom")], BACK])
         asyncio.create_task(run_job(uid, "Apply All", ids, userbot.apply_account))
         return await edit(q, f"🚀 Applying on {len(ids)} accounts. Progress below 👇", [BACK])
 
@@ -295,39 +527,97 @@ async def callbacks(_, q: CallbackQuery):
         target = d[5:]
         return await edit(q, "♻️ **Reset?**\nOld name, bio, photo & username come back.\n"
                              "Channels/groups get random names & usernames.", [
-            [B("✅ Yes, reset", f"rst:{target}"), B("❌ No", "accs")]])
+            [B("✅ Yes, reset", f"rst:{target}", R, "yes"), B("❌ No", "accs", D, "no")]])
 
     if d.startswith("rst:"):
         target = d[4:]
-        ids = [a["_id"] for a in await db.all_accounts()] if target == "all" else [int(target)]
+        if target == "all":
+            ids = [a["_id"] for a in await db.all_accounts()]
+        else:
+            ids = [i for i in [parse_id(target)] if i]
+        if not ids:
+            return await edit(q, "No accounts to reset.", [back("accs")])
         asyncio.create_task(run_job(uid, "Reset", ids, userbot.reset_account))
         return await edit(q, "♻️ Reset started. Progress below 👇", [BACK])
 
     if d.startswith("rm?:"):
-        return await edit(q, "❌ Remove this account from the bot?\n(Telegram account itself is not deleted)", [
-            [B("✅ Yes", f"rm:{d[4:]}"), B("❌ No", f"acc:{d[4:]}")]])
+        return await edit(q, "🗑 Remove this account from the bot?\n(Telegram account itself is not deleted)", [
+            [B("✅ Yes", f"rm:{d[4:]}", R, "yes"), B("❌ No", f"acc:{d[4:]}", D, "no")]])
     if d.startswith("rm:"):
-        await db.remove_account(int(d[3:]))
-        return await edit(q, "🗑 Account removed.", [[B("🔙 Back", "accs")]])
+        acc_id = parse_id(d[3:])
+        if acc_id:
+            await db.remove_account(acc_id)
+        return await edit(q, "🗑 Account removed.", [back("accs")])
 
 
 # ------------------------------------------------------------ text / photo input
 async def finish_login(m: Message, user_id: int, session: str, info: dict, original: dict):
+    existed = await db.get_account(user_id)
     await db.save_account(user_id, session, info, original)
     s = await db.get_settings()
-    await m.reply(f"✅ **Account added:** {info['name']} (`{user_id}`)",
-                  reply_markup=M([[B("🚀 Apply now", f"ap:{user_id}")], BACK]))
+    word = "updated" if existed else "added"
+    await reply(m, f"✅ **Account {word}:** {info.get('name')} (`{user_id}`)",
+                [[B("🚀 Apply now", f"ap:{user_id}", G, "apply")], BACK])
     if s["auto"]:
         asyncio.create_task(run_job(m.chat.id, "Auto Apply", [user_id], userbot.apply_account))
 
 
-@bot.on_message(filters.private & OWNER & (filters.text | filters.photo) & ~filters.command(["start", "menu", "cancel"]))
+@bot.on_message(filters.private & OWNER & ~filters.command(["start", "menu", "cancel"]))
 async def inputs(_, m: Message):
+    try:
+        await handle_input(m)
+    except Exception as e:
+        log.exception("input failed")
+        await drop_state(m.from_user.id)
+        try:
+            await reply(m, f"⚠️ **Error:** {friendly(e)}", [BACK])
+        except Exception:
+            pass
+
+
+def custom_emoji_id(m: Message) -> str | None:
+    for ent in (m.entities or []) + (m.caption_entities or []):
+        if ent.type == MessageEntityType.CUSTOM_EMOJI and ent.custom_emoji_id:
+            return str(ent.custom_emoji_id)
+    sid = getattr(m.sticker, "custom_emoji_id", None) if m.sticker else None
+    if sid:
+        return str(sid)
+    return None
+
+
+async def handle_input(m: Message):
     uid = m.from_user.id
     st = STATE.get(uid)
     if not st:
-        return await m.reply("Use /start to open the menu.")
+        return await reply(m, "Use the menu 👇", [[B("🏠 Open Menu", "home", P, "back")]])
     step = st["step"]
+
+    # ---- owner panel inputs
+    if step == "start_pic":
+        if not m.photo:
+            return await m.reply("Please send a **photo** (not a file). /cancel to stop")
+        UI["start_pic"] = m.photo.file_id
+        await db.set_ui("start_pic", m.photo.file_id)
+        STATE.pop(uid, None)
+        return await reply(m, "✅ Start pic saved permanently.", [back("owner")])
+
+    if step == "emoji":
+        key = st["key"]
+        eid = custom_emoji_id(m)
+        if not eid and m.text and m.text.strip().isdigit():
+            eid = m.text.strip()
+        if not eid:
+            return await m.reply("❌ That's not a premium emoji. Send a custom emoji or its numeric ID.")
+        if eid == "0":
+            UI["emojis"].pop(key, None)
+        else:
+            UI["emojis"][key] = eid
+            UI["icons"] = True
+            await db.set_ui("icons", True)
+        await db.set_ui("emojis", UI["emojis"])
+        STATE.pop(uid, None)
+        return await reply(m, f"✅ Icon for **{EMOJI_KEYS[key]}** {'removed' if eid == '0' else 'saved'}.",
+                           [back("op:emo")])
 
     # ---- settings
     if step == "field":
@@ -341,18 +631,22 @@ async def inputs(_, m: Message):
             if not m.text:
                 return await m.reply("Please send text.")
             val = m.text.strip()
+            limit = {"name": 64 if kind == "user" else 128, "bio": 70 if kind == "user" else 255}.get(field)
+            if limit and len(val) > limit:
+                return await m.reply(f"❌ Too long ({len(val)}/{limit}). Send a shorter one.")
             if field == "username":
                 val = val.lstrip("@")
-                if not val.replace("_", "").isalnum() or not val[0].isalpha():
-                    return await m.reply("Invalid username. Use letters, numbers, _ and start with a letter.")
+                if not (4 <= len(val) <= 28) or not val.replace("_", "").isalnum() or not val[0].isalpha() \
+                        or not val.isascii():
+                    return await m.reply("❌ Invalid username. 4–28 chars, English letters/numbers/_ , start with a letter.")
             await db.set_field(kind, field, val)
         STATE.pop(uid, None)
-        return await m.reply(f"✅ {KIND_LABEL[kind]} {FIELD_LABEL[field]} saved.\n"
-                             "It will be used on all accounts (tap Apply All, or keep Auto ON).",
-                             reply_markup=M([[B("🔙 Back", f"k:{kind}"), B("🚀 Apply All", "apply_all")]]))
+        return await reply(m, f"✅ {KIND_LABEL[kind]} {FIELD_LABEL[field]} saved.\n"
+                              "It will be used on all accounts (tap Apply All, or keep Auto ON).",
+                           [[B("🔙 Back", f"k:{kind}", D, "back"), B("🚀 Apply All", "apply_all", G, "apply")]])
 
     if not m.text:
-        return
+        return await m.reply("Please send text. /cancel to stop")
     text = m.text.strip()
 
     # ---- string session
@@ -364,27 +658,36 @@ async def inputs(_, m: Message):
             pass
         wait = await m.reply("⏳ Checking session…")
         try:
-            user_id, session, info, original = await userbot.login_with_string(text)
+            user_id, session, info, original = await asyncio.wait_for(userbot.login_with_string(text), 90)
+        except asyncio.TimeoutError:
+            return await wait.edit_text("❌ Session check timed out. Try again.")
         except Exception as e:
-            return await wait.edit_text(f"❌ Invalid session: {e}", reply_markup=M([BACK]))
+            await wait.delete()
+            return await reply(m, f"❌ Invalid session: {friendly(e)}", [BACK])
         await wait.delete()
         return await finish_login(m, user_id, session, info, original)
 
     # ---- phone login
     if step == "phone":
-        phone = text.replace(" ", "")
+        phone = "".join(ch for ch in text if ch.isdigit() or ch == "+")
+        if len(phone.lstrip("+")) < 7:
+            return await m.reply("❌ That doesn't look like a phone number. Example: `+919876543210`")
         c = userbot.new_client(None, "login")
-        await c.connect()
         try:
+            await c.connect()
             sent = await c.send_code(phone)
         except PhoneNumberInvalid:
-            await c.disconnect()
+            await _disc(c)
             return await m.reply("❌ Invalid phone number. Try again or /cancel.")
-        except Exception as e:
-            await c.disconnect()
+        except FloodWait as e:
+            await _disc(c)
             STATE.pop(uid, None)
-            return await m.reply(f"❌ {e}", reply_markup=M([BACK]))
-        STATE[uid] = {"step": "code", "client": c, "phone": phone, "hash": sent.phone_code_hash}
+            return await reply(m, f"❌ Too many tries. Wait {e.value}s.", [BACK])
+        except Exception as e:
+            await _disc(c)
+            STATE.pop(uid, None)
+            return await reply(m, f"❌ {friendly(e)}", [BACK])
+        STATE[uid] = {"step": "code", "client": c, "phone": phone, "hash": sent.phone_code_hash, "t": time.time()}
         return await m.reply("📩 OTP sent. Send it **with spaces**, e.g. `1 2 3 4 5`\n/cancel to stop")
 
     if step == "code":
@@ -394,17 +697,21 @@ async def inputs(_, m: Message):
             await m.delete()
         except Exception:
             pass
+        if len(code) < 5:
+            return await m.reply("❌ Code should be 5+ digits. Send again or /cancel.")
         try:
             await c.sign_in(st["phone"], st["hash"], code)
         except SessionPasswordNeeded:
             st["step"] = "password"
             return await m.reply("🔐 2-step verification is on. Send the **password**.\n/cancel to stop")
-        except (PhoneCodeInvalid, PhoneCodeExpired) as e:
-            return await m.reply(f"❌ {e.__class__.__name__}. Send the code again or /cancel.")
+        except PhoneCodeInvalid:
+            return await m.reply("❌ Wrong code. Send it again or /cancel.")
+        except PhoneCodeExpired:
+            await drop_state(uid)
+            return await reply(m, "❌ Code expired. Start phone login again.", [[B("📱 Phone Login", "add:phone", G)], BACK])
         except Exception as e:
-            STATE.pop(uid, None)
-            await c.disconnect()
-            return await m.reply(f"❌ Login failed: {e}", reply_markup=M([BACK]))
+            await drop_state(uid)
+            return await reply(m, f"❌ Login failed: {friendly(e)}", [BACK])
         return await _phone_done(m, uid, c)
 
     if step == "password":
@@ -418,10 +725,16 @@ async def inputs(_, m: Message):
         except PasswordHashInvalid:
             return await m.reply("❌ Wrong password. Try again or /cancel.")
         except Exception as e:
-            STATE.pop(uid, None)
-            await c.disconnect()
-            return await m.reply(f"❌ Login failed: {e}", reply_markup=M([BACK]))
+            await drop_state(uid)
+            return await reply(m, f"❌ Login failed: {friendly(e)}", [BACK])
         return await _phone_done(m, uid, c)
+
+
+async def _disc(c: Client):
+    try:
+        await c.disconnect()
+    except Exception:
+        pass
 
 
 async def _phone_done(m: Message, uid: int, c: Client):
@@ -431,18 +744,39 @@ async def _phone_done(m: Message, uid: int, c: Client):
         me = await c.get_me()
         original = await userbot.snapshot_profile(c)
     finally:
-        await c.disconnect()
+        await _disc(c)
     await finish_login(m, me.id, session, userbot.user_info(me), original)
+
+
+# ------------------------------------------------------------ housekeeping
+async def expire_logins():
+    """Close half-finished phone logins after 10 minutes."""
+    while True:
+        await asyncio.sleep(60)
+        for uid, st in list(STATE.items()):
+            if st.get("client") and time.time() - st.get("t", time.time()) > 600:
+                await drop_state(uid)
+                try:
+                    await bot.send_message(uid, "⌛ Login timed out. Start again from ➕ Add Account.")
+                except Exception:
+                    pass
 
 
 # ------------------------------------------------------------ run
 async def main():
+    try:
+        await db.ping()
+    except Exception as e:
+        raise SystemExit(f"MongoDB connection failed: {e}")
+    ui = await db.get_ui()
+    UI.update(emojis=dict(ui["emojis"]), icons=bool(ui["icons"]), start_pic=ui["start_pic"])
     await bot.start()
     me = await bot.get_me()
     log.info("Bot started as @%s – owners: %s", me.username, config.OWNER_IDS)
+    asyncio.create_task(expire_logins())
     for oid in config.OWNER_IDS:
         try:
-            await bot.send_message(oid, "✅ Bot is online. Send /start")
+            await send(oid, "✅ Bot is online.", [[B("🏠 Open Menu", "home", P, "back")]])
         except Exception:
             pass
     await idle()
