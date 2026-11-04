@@ -1,7 +1,9 @@
-"""Detailed logs to a Telegram log channel – queued & batched so it never floods the bot."""
+"""Detailed logs to a Telegram log channel – queued, batched and nicely formatted (never floods the bot)."""
 import asyncio
 import html
 import logging
+import os
+import re
 import time
 
 from pyrogram.errors import FloodWait
@@ -11,6 +13,21 @@ import config
 
 log = logging.getLogger("logchan")
 NOPREV = LinkPreviewOptions(is_disabled=True)
+
+# Log time zone offset in minutes (default India +5:30)
+TZ_MIN = int(os.environ.get("LOG_TZ_OFFSET", "330"))
+TZ_TXT = f"UTC{'+' if TZ_MIN >= 0 else '-'}{abs(TZ_MIN) // 60}:{abs(TZ_MIN) % 60:02d}"
+
+# level emoji -> searchable hashtag in the channel
+TAG = {
+    "❌": "error", "💥": "crash", "🛑": "error", "⚠️": "warning", "⏳": "flood", "⌛": "timeout",
+    "🛒": "order", "🧾": "payment", "💰": "money", "✅": "success", "🏁": "done", "📦": "sold",
+    "🎟": "redeem", "🚫": "ban", "👤": "user", "🆕": "user", "▶️": "start", "⌨️": "command",
+    "💬": "message", "🔘": "button", "📣": "broadcast", "👑": "owner", "➕": "account", "🗑": "removed",
+    "🚀": "job", "🔤": "username", "⚙️": "settings", "🔐": "logout", "📩": "otp", "🟢": "online",
+    "🤖": "stock", "📚": "stock", "📢": "stock", "🖼": "settings", "🔒": "mustjoin", "🆔": "order",
+    "•": "progress",
+}
 
 _queue: asyncio.Queue | None = None
 _bot = None
@@ -27,30 +44,59 @@ def setup(bot):
     asyncio.create_task(_worker())
 
 
+def _now(fmt: str) -> str:
+    return time.strftime(fmt, time.gmtime(time.time() + TZ_MIN * 60))
+
+
+def fmt_entry(text: str, level: str = "ℹ️", stamp: str | None = None) -> str:
+    """One log entry as an HTML card:
+    ❌ <b>Headline</b>  #tag
+    ├ detail
+    └ 🕒 12:30:05"""
+    text = str(text).strip()[:900]
+    parts = [x.strip() for x in re.split(r"\s+\|\s+", text) if x.strip()]
+    head, details = (parts[0] if parts else "-"), parts[1:]
+    tag = TAG.get(level) or TAG.get(level.replace("\ufe0f", "")) or "info"
+    out = [f"{level} <b>{html.escape(head)}</b>  #{tag}"]
+    for d in details:
+        if ":" in d and d.index(":") < 25:
+            k, v = d.split(":", 1)
+            out.append(f"├ <i>{html.escape(k.strip())}:</i> <code>{html.escape(v.strip())}</code>")
+        else:
+            out.append(f"├ {html.escape(d)}")
+    out.append(f"└ 🕒 <code>{stamp or _now('%H:%M:%S')}</code>")
+    return "<blockquote>" + "\n".join(out) + "</blockquote>"
+
+
 def push(text: str, level: str = "ℹ️"):
-    """Non-blocking. Safe to call from anywhere."""
+    """Non-blocking. Safe to call from anywhere. Use ' | ' in text to split it into detail lines."""
     if _queue is None:
         return
-    stamp = time.strftime("%H:%M:%S", time.gmtime())
-    line = f"{level} <code>{stamp}</code> {html.escape(str(text))[:900]}"
     try:
-        _queue.put_nowait(line)
+        _queue.put_nowait(fmt_entry(text, level))
     except asyncio.QueueFull:
         pass
+
+
+def _header(n: int) -> str:
+    return (f"📋 <b>KHOUFU LOGS</b>  •  📅 <code>{_now('%d %b %Y')}</code>  •  {TZ_TXT}\n"
+            f"<i>{n} event{'s' if n != 1 else ''}</i>\n")
 
 
 async def _worker():
     while True:
         first = await _queue.get()
-        lines = [first]
+        entries = [first]
         # collect for up to 3 seconds -> one message instead of many
         deadline = time.time() + 3
-        while time.time() < deadline and sum(len(x) + 1 for x in lines) < 3500:
+        while time.time() < deadline and sum(len(x) + 1 for x in entries) < 3300:
             try:
-                lines.append(await asyncio.wait_for(_queue.get(), max(0.05, deadline - time.time())))
+                entries.append(await asyncio.wait_for(_queue.get(), max(0.05, deadline - time.time())))
             except asyncio.TimeoutError:
                 break
-        text = "\n".join(lines)[:4000]
+        text = (_header(len(entries)) + "\n".join(entries))[:4000]
+        if text.count("<blockquote>") != text.count("</blockquote>"):  # cut in the middle -> drop last
+            text = text[:text.rfind("<blockquote>")]
         for _ in range(3):
             try:
                 await _bot.send_message(config.LOG_CHANNEL, text, parse_mode=_html(),

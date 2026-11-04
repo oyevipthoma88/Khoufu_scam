@@ -62,6 +62,11 @@ PREMIUM = {
     "⚡": "5431449001532594346", "👋": "5472055112702629499", "💚": "5449380056201697322",
     "🔥": "5420315771991497307", "💎": "5471952986970267163", "⭐": "5435957248314579621",
 }
+# Same-meaning aliases (reuse the verified IDs above) so more buttons get a premium icon.
+for _a, _src in {"🗑": "❌", "🚫": "❌", "🏁": "🎉", "🔁": "🔄", "🆔": "🔑", "🔤": "✏", "🎨": "✨",
+                 "💬": "📝", "👛": "💸", "🟢": "✅", "⏳": "⚡", "📤": "🚀", "🔓": "🔐", "📋": "🧾",
+                 "🌐": "🌍", "📲": "📱", "🏷": "🎟", "🙋": "👋"}.items():
+    PREMIUM.setdefault(_a, PREMIUM[_src])
 
 
 def _auto_icon(text: str):
@@ -111,7 +116,7 @@ async def safe_send(coro_factory):
     except MessageNotModified:
         return None
     except (BadRequest, ValueError) as e:
-        if not UI["icons"] or not UI["emojis"]:
+        if not UI["icons"]:  # icons already off -> real error
             raise
         log.warning("Button icons rejected (%s) – disabling icons", e)
         UI["icons"] = False

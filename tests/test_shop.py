@@ -76,3 +76,31 @@ async def test_balance_never_negative():
     assert await db.take_balance(3, 50) is False
     assert await db.take_balance(3, 40) is True
     assert (await db.get_user(3))["balance"] == 0
+
+
+def test_scam_and_normal_same_country_have_separate_prices():
+    from shop_core import acc_key, price_for_country
+    shop = {"prices": {"account": {acc_key("normal", "IN"): 80, acc_key("scam", "IN"): 30}}}
+    assert price_for_country(shop, "IN", "normal") == 80
+    assert price_for_country(shop, "IN", "scam") == 30
+    assert price_of(shop, {"kind": "account", "country": "IN", "tag": "scam"}) == 30
+
+
+def test_scam_never_uses_normal_price():
+    shop = {"prices": {"account": {"IN": 80, "_": 100}}}
+    assert price_of(shop, {"kind": "account", "country": "IN", "tag": "scam"}) == 0
+    assert price_of(shop, {"kind": "account", "country": "IN"}) == 80  # old untagged stock = normal
+
+
+def test_tag_default_price():
+    from shop_core import acc_key
+    shop = {"prices": {"account": {acc_key("fake", "_"): 40}}}
+    assert price_of(shop, {"kind": "account", "country": "US", "tag": "fake"}) == 40
+    assert price_of(shop, {"kind": "account", "country": "US", "tag": "normal"}) == 0
+
+
+def test_log_entry_format():
+    import logchan
+    e = logchan.fmt_entry("Order #5 created | buyer: 123 | <x>", "🛒", stamp="10:00:00")
+    assert "<b>Order #5 created</b>" in e and "#order" in e
+    assert "<code>123</code>" in e and "&lt;x&gt;" in e

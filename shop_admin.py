@@ -160,8 +160,14 @@ async def admin_cb(q: CallbackQuery):
             v = pr.get(k)
             if k == "account":
                 v = v if isinstance(v, dict) else {}
-                extra = ", ".join(f"{c}: {money(x)}" for c, x in v.items() if c != "_")
-                lines.append(f"📱 Account: default {money(v.get('_', 0)) if v.get('_') else '—'}" + (f" ({extra})" if extra else ""))
+                lines.append("📱 **Accounts**")
+                for t, tname in core.TAGS.items():
+                    pre = core.acc_key(t, "")
+                    own = {kk[len(pre):]: x for kk, x in v.items()
+                           if (kk.startswith(pre) if pre else "-" not in kk)}
+                    d = own.pop("_", None)
+                    extra = ", ".join(f"{shop_tg.flag(c)} {c} {money(x)}" for c, x in own.items())
+                    lines.append(f"   {tname}: default {money(d) if d else '—'}" + (f" • {extra}" if extra else ""))
             else:
                 lines.append(f"{KIND_ICON[k]} {KIND_NAME[k]}: {money(v) if v else '— (per item)'}")
         rows = [[B(f"{KIND_ICON[k]} {KIND_NAME[k]}", f"so:pk:{k}", P)] for k in KINDS]
@@ -169,18 +175,36 @@ async def admin_cb(q: CallbackQuery):
     if act == "pk":
         kind = p[2]
         if kind == "account":
-            cs = await db.account_countries()
-            rows = [[B("🌍 Default (all countries)", "so:pc:account:_", G)]]
-            for c in cs:
-                rows.append([B(f"{shop_tg.flag(c['_id'])} {c.get('name') or c['_id']} ({c['n']})", f"so:pc:account:{c['_id']}", P)])
-            return await show(q, "📱 Price for which country?\nA country price beats the default.", rows + [[B("🔙 Back", "so:price", D, "back")]])
+            rows = [[B(name, f"so:pt:{t}", R if t == "scam" else G if t == "normal" else P, core.TAG_KEY[t])]
+                    for t, name in core.TAGS.items()]
+            return await show(q, "📱 **Account price** – which account type?\n"
+                                 "Each type has its own prices, even for the same country.",
+                              rows + [[B("🔙 Back", "so:price", D, "back")]])
         d = f"so:pc:{kind}:_"
         q.data = d
         return await admin_cb(q)
+    if act == "pt":
+        tag = core.norm_tag(p[2])
+        cs = await db.account_countries(core.tag_query(tag))
+        shop = await db.get_shop()
+        dflt = core.price_for_country(shop, "__none__", tag)
+        rows = [[B(f"🌍 Default – all countries ({money(dflt) if dflt else '—'})",
+                   f"so:pc:account:{core.acc_key(tag, '_')}", G)]]
+        for c in cs:
+            pr = core.price_for_country(shop, c["_id"], tag)
+            rows.append([B(f"{shop_tg.flag(c['_id'])} {c.get('name') or c['_id']} ({c['n']}) • {money(pr) if pr else '—'}",
+                           f"so:pc:account:{core.acc_key(tag, c['_id'])}", P)])
+        return await show(q, f"📱 **{core.TAGS[tag]}** – price for which country?\n"
+                             "A country price beats the default of this type.",
+                          rows + [[B("🔙 Back", "so:pk:account", D, "back")]])
     if act == "pc":
         kind, cc = p[2], p[3]
         SSTATE[uid] = {"step": "price", "kind": kind, "cc": cc}
-        label = f"{KIND_NAME[kind]}" + (f" – {cc}" if cc != "_" else "")
+        if kind == "account":
+            t, c = core.split_ref(cc)
+            label = f"{KIND_NAME[kind]} {core.TAGS[t]} – " + ("all countries" if c == "_" else f"{shop_tg.flag(c)} {c}")
+        else:
+            label = KIND_NAME[kind]
         return await show(q, f"💰 Send the **price** for **{label}** (number only, e.g. `99`).\n"
                              "Send `0` to remove it." + CANCEL_TXT, [[B("🔙 Back", "so:price", D, "back")]])
 
@@ -403,7 +427,7 @@ async def admin_input(m: Message, st: dict):
         else:
             await db.set_shop(f"prices.{kind}", val)
         SSTATE.pop(uid, None)
-        lg(f"Price set: {kind} {cc} = {val}", "💰")
+        lg(f"Price set: {kind} {cc} | new price {money(val) if val else 'removed'} | by {who(m.from_user)}", "💰")
         return await reply(m, f"✅ Price saved: **{money(val) if val else 'removed'}**", [[B("💰 Prices", "so:price", G), *BACK_HOME]])
 
     if step == "qr":

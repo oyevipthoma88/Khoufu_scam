@@ -65,3 +65,12 @@ Notes:
 
 ## Tests
 `pip install pytest pytest-asyncio mongomock-motor && pytest -q`
+
+## Prices per account type
+Normal, Scam Tag and Fake Tag accounts have **separate prices**, even for the same country.
+Shop Admin → Set Price → Account → pick the type → pick a country (or Default).
+A Scam/Fake account never uses the Normal price – set its price, or it stays hidden from buyers.
+
+## Log channel
+Logs arrive as neat cards with a `#tag` (e.g. `#error`, `#order`, `#payment`) so you can search them in the channel.
+`LOG_TZ_OFFSET` – log time zone in minutes (default `330` = India).

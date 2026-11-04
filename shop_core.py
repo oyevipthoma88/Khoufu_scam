@@ -86,18 +86,37 @@ def friendly_err(e: Exception) -> str:
 
 
 # ---------------------------------------------------------------- prices
+def norm_tag(tag) -> str:
+    return tag if tag in ("scam", "fake") else "normal"
+
+
+def acc_key(tag: str, cc: str) -> str:
+    """Price key for an account type + country. Normal keeps the old keys ('IN', '_');
+    scam / fake get their own ('scam-IN', 'scam-_') so they NEVER share a price with normal."""
+    tag = norm_tag(tag)
+    return cc if tag == "normal" else f"{tag}-{cc}"
+
+
 def price_of(shop: dict, item: dict) -> float:
-    """Item price > country price > kind default. 0 = not set (item can't be sold)."""
+    """Item price > (type + country) price > type default. 0 = not set (item can't be sold).
+    Accounts: a Scam/Fake account never falls back to the Normal price of the same country."""
     if item.get("price"):
         return float(item["price"])
     p = (shop.get("prices") or {}).get(item["kind"]) or {}
-    if isinstance(p, dict):
-        return float(p.get(item.get("country") or "", 0) or p.get("_", 0) or 0)
-    return float(p or 0)
+    if not isinstance(p, dict):
+        return float(p or 0)
+    if item["kind"] == "account":
+        tag = norm_tag(item.get("tag"))
+        for k in (acc_key(tag, item.get("country") or ""), acc_key(tag, "_")):
+            v = p.get(k)
+            if v:
+                return float(v)
+        return 0.0
+    return float(p.get(item.get("country") or "", 0) or p.get("_", 0) or 0)
 
 
-def price_for_country(shop: dict, cc: str) -> float:
-    return price_of(shop, {"kind": "account", "country": cc})
+def price_for_country(shop: dict, cc: str, tag: str = "normal") -> float:
+    return price_of(shop, {"kind": "account", "country": cc, "tag": tag})
 
 
 # ---------------------------------------------------------------- sending (flood safe)

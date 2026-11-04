@@ -231,7 +231,7 @@ async def buy_list(q: CallbackQuery, parts: list[str]):
         lines, rows = [f"📱 **{core.TAGS[tag]} account stock**\n"], []
         for c in rows_c:
             cc = c["_id"]
-            p = price_for_country(shop, cc)
+            p = price_for_country(shop, cc, tag)
             label = f"{shop_tg.flag(cc)} {c.get('name') or cc}"
             lines.append(f"{label} – **{c['n']}** in stock – {money(p) if p else 'price not set'}")
             if p:
@@ -270,7 +270,7 @@ async def item_view(q: CallbackQuery, t: str, ref: str):
         sample = await db.stock_col.find_one(aq)
         if not n or not sample:
             return await show(q, "😔 Sorry, that country just went out of stock.", [[B("🔙 Back", f"u:buy:account:{tag}", D, "back")]])
-        p = price_for_country(shop, cc)
+        p = price_for_country(shop, cc, tag)
         text = (f"📱 **Telegram account** – {core.TAGS[tag]}\n{shop_tg.flag(cc)} Country: **{sample.get('country_name') or cc}**\n"
                 f"📦 In stock: **{n}**\n💰 Price: **{money(p)}**\n━━━━━━━━━━━━━━━━━━\n"
                 "🎁 You get: number + 2FA password\n📩 Login OTP is sent right here\n🔐 Bot logs out after you log in")
@@ -310,7 +310,7 @@ async def make_order(q: CallbackQuery, t: str, ref: str):
         if t == "a":
             tag, cc = core.split_ref(ref)
             query = {"kind": "account", "country": cc, **core.tag_query(tag)}
-            price = price_for_country(shop, cc)
+            price = price_for_country(shop, cc, tag)
         else:
             try:
                 query = {"_id": ObjectId(ref)}
