@@ -119,3 +119,34 @@ def test_every_button_emoji_has_premium_icon():
     assert not missing, missing
     assert _auto_icon("🇮🇳 India • 5") == PREMIUM["🇮🇳"]  # country buttons get flag icons
     assert all(v.isdigit() for v in PREMIUM.values())
+
+
+def test_premium_emojis_in_text():
+    from premium_text import emoji_entities
+    from premium_emoji import PREMIUM
+    ents = emoji_entities("✅ Paid 💰 ₹99")
+    assert [e.offset for e in ents] == [0, 7]
+    assert ents[1].document_id == int(PREMIUM["💰"])
+    assert emoji_entities("⚠️ alert")[0].length == 2  # variation selector included
+
+
+def test_code_blocks_keep_plain_emoji():
+    from pyrogram import raw
+    from premium_text import emoji_entities
+    code = raw.types.MessageEntityCode(offset=0, length=2)
+    assert emoji_entities("🔥 hot 🔥", [code])[0].offset == 7
+
+
+def test_bot_parser_adds_premium_only_for_bot():
+    import asyncio
+    from pyrogram.parser.parser import Parser
+    import premium_text
+    premium_text.install()
+    class C: bot_token = "1:x"; parse_mode = None
+    class U: bot_token = None; parse_mode = None
+    from pyrogram import enums
+    C.parse_mode = U.parse_mode = enums.ParseMode.DEFAULT
+    r = asyncio.run(Parser(C()).parse("**🎉 Done**"))
+    assert any(type(e).__name__ == "MessageEntityCustomEmoji" for e in r["entities"])
+    r2 = asyncio.run(Parser(U()).parse("**🎉 Done**"))
+    assert not any(type(e).__name__ == "MessageEntityCustomEmoji" for e in r2["entities"] or [])

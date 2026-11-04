@@ -22,6 +22,8 @@ import shop
 import ui
 import userbot
 from logchan import NOPREV
+import premium_text
+premium_text.install()  # premium emojis in every bot message text
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("pyrogram").setLevel(logging.WARNING)

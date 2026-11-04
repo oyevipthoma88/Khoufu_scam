@@ -74,3 +74,7 @@ A Scam/Fake account never uses the Normal price – set its price, or it stays h
 ## Log channel
 Logs arrive as neat cards with a `#tag` (e.g. `#error`, `#order`, `#payment`) so you can search them in the channel.
 `LOG_TZ_OFFSET` – log time zone in minutes (default `330` = India).
+
+## Premium emojis in text
+Every emoji in the bot's messages (menus, orders, alerts, logs) is shown as a matching premium emoji automatically.
+If Telegram refuses them, the bot falls back to normal emojis by itself. `PREMIUM_TEXT=0` turns it off.
