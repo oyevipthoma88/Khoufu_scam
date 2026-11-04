@@ -104,3 +104,18 @@ def test_log_entry_format():
     e = logchan.fmt_entry("Order #5 created | buyer: 123 | <x>", "🛒", stamp="10:00:00")
     assert "<b>Order #5 created</b>" in e and "#order" in e
     assert "<code>123</code>" in e and "&lt;x&gt;" in e
+
+
+def test_every_button_emoji_has_premium_icon():
+    import glob, re
+    from premium_emoji import PREMIUM
+    from ui import _auto_icon
+    missing = set()
+    for f in glob.glob(os.path.join(os.path.dirname(os.path.dirname(__file__)), "*.py")):
+        for lab in re.findall(r'B\("([^"{]+)"', open(f, encoding="utf-8").read()):
+            head = lab.split(" ", 1)[0]
+            if head and not head[0].isalnum() and not _auto_icon(lab):
+                missing.add(head)
+    assert not missing, missing
+    assert _auto_icon("🇮🇳 India • 5") == PREMIUM["🇮🇳"]  # country buttons get flag icons
+    assert all(v.isdigit() for v in PREMIUM.values())

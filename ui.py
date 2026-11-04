@@ -41,37 +41,21 @@ EMOJI_KEYS = {
 }
 UI = {"emojis": {}, "icons": True, "start_pic": None}
 
-# Real premium (custom) emoji IDs from Telegram's official "RestrictedEmoji" pack (checked via Bot API getStickerSet).
-# Used automatically for every button whose label starts with one of these emojis.
+# Premium icon for every button whose label starts with an emoji (flags too). 1000+ verified IDs.
 # Owner Panel -> Button Emojis still overrides any of them.
-PREMIUM = {
-    "➕": "5226945370684140473", "👤": "5373012449597335010", "📖": "5226512880362332956",
-    "🚀": "5445284980978621387", "🤖": "5372981976804366741", "🔗": "5375129357373165375",
-    "📊": "5431577498364158238", "✅": "5427009714745517609", "❌": "5465665476971471368",
-    "👑": "5467406098367521267", "✏": "5334673106202010226", "🛍": "5373052667671093676",
-    "🛒": "5431499171045581032", "📱": "5407025283456835913", "👥": "5372926953978341366",
-    "📚": "5373098009640836781", "📣": "5469903029144657419", "📢": "5469903029144657419",
-    "🎟": "5377599075237502153", "🎭": "5359441070201513074", "💰": "5375296873982604963",
-    "🖼": "5375074927252621134", "🏦": "5264895611517300926", "🏠": "5465226866321268133",
-    "✨": "5472164874886846699", "🎉": "5436040291507247633", "🔐": "5472308992514464048",
-    "🔒": "5472308992514464048", "💸": "5472030678633684592", "🌍": "5399898266265475100",
-    "🔄": "5264727218734524899", "♻": "5264727218734524899", "🧾": "5334882760735598374",
-    "📝": "5334882760735598374", "⚠": "5467928559664242360", "❗": "5467928559664242360",
-    "📦": "5199749070830197566", "🎁": "5199749070830197566", "🔑": "5330115548900501467",
-    "💳": "5375296873982604963", "📩": "5406631276042002796", "📞": "5467539229468793355",
-    "⚡": "5431449001532594346", "👋": "5472055112702629499", "💚": "5449380056201697322",
-    "🔥": "5420315771991497307", "💎": "5471952986970267163", "⭐": "5435957248314579621",
-}
-# Same-meaning aliases (reuse the verified IDs above) so more buttons get a premium icon.
-for _a, _src in {"🗑": "❌", "🚫": "❌", "🏁": "🎉", "🔁": "🔄", "🆔": "🔑", "🔤": "✏", "🎨": "✨",
-                 "💬": "📝", "👛": "💸", "🟢": "✅", "⏳": "⚡", "📤": "🚀", "🔓": "🔐", "📋": "🧾",
-                 "🌐": "🌍", "📲": "📱", "🏷": "🎟", "🙋": "👋"}.items():
-    PREMIUM.setdefault(_a, PREMIUM[_src])
+from premium_emoji import PREMIUM  # noqa: E402
 
 
 def _auto_icon(text: str):
-    head = text.split(" ", 1)[0].replace("\ufe0f", "") if text else ""
-    return PREMIUM.get(head)
+    if not text:
+        return None
+    head = text.split(" ", 1)[0].replace("\ufe0f", "")
+    if head in PREMIUM:
+        return PREMIUM[head]
+    # "👮‍♂️x" / skin tones -> try the base emoji
+    base = head.split("\u200d")[0]
+    base = "".join(ch for ch in base if not 0x1F3FB <= ord(ch) <= 0x1F3FF)
+    return PREMIUM.get(base)
 
 
 def B(text: str, data: str, style: ButtonStyle = D, key: str | None = None) -> tuple:
