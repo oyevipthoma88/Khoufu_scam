@@ -150,3 +150,20 @@ def test_bot_parser_adds_premium_only_for_bot():
     assert any(type(e).__name__ == "MessageEntityCustomEmoji" for e in r["entities"])
     r2 = asyncio.run(Parser(U()).parse("**🎉 Done**"))
     assert not any(type(e).__name__ == "MessageEntityCustomEmoji" for e in r2["entities"] or [])
+
+
+def test_log_entry_hashtags_and_severity():
+    import logchan
+    e = logchan.fmt_entry("Order #7 APPROVED by Ram (123456789)", "✅", stamp="10:00:00")
+    assert "#success" in e and "#ok" in e and "#order_7" in e and "#id123456789" in e
+    assert "\n🟢 #" in e
+    bad = logchan.fmt_entry("Button error: boom", "❌", stamp="10:00:00")
+    assert "\n🔴 #error #alert" in bad
+    h = logchan._header([e, bad])
+    assert "🔴 1" in h and "🟢 1" in h and "#logs" in h
+
+
+def test_stylish_pack_overrides_default():
+    from premium_emoji import PREMIUM
+    from premium_style import STYLE
+    assert PREMIUM["⭐"] == STYLE["⭐"] and STYLE["⭐"].isdigit()
