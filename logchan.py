@@ -26,8 +26,32 @@ TAG = {
     "💬": "message", "🔘": "button", "📣": "broadcast", "👑": "owner", "➕": "account", "🗑": "removed",
     "🚀": "job", "🔤": "username", "⚙️": "settings", "🔐": "logout", "📩": "otp", "🟢": "online",
     "🤖": "stock", "📚": "stock", "📢": "stock", "🖼": "settings", "🔒": "mustjoin", "🆔": "order",
-    "•": "progress",
+    "🛍": "shop", "•": "progress",
 }
+# tag -> severity  (🔴 problem · 🟡 attention · 🟢 money/success · 🔵 activity)
+SEV = {
+    "error": "🔴", "crash": "🔴", "ban": "🔴",
+    "warning": "🟡", "flood": "🟡", "timeout": "🟡", "logout": "🟡",
+    "order": "🟢", "payment": "🟢", "money": "🟢", "success": "🟢", "done": "🟢", "sold": "🟢",
+    "redeem": "🟢", "online": "🟢",
+}
+SEV_NAME = {"🔴": "alert", "🟡": "attention", "🟢": "ok", "🔵": "info"}
+_ORDER_RX = re.compile(r"(?i)order\s*#(\d+)")
+_USER_RX = re.compile(r"\((\d{5,})\)|\b(?:buyer|user|by|uid)[: ]+(\d{5,})\b", re.I)
+
+
+def _tags(text: str, tag: str) -> str:
+    """#tag #ok + searchable #order_5 / #id12345 so the channel search finds everything."""
+    sev = SEV.get(tag, "🔵")
+    out = [f"#{tag}", f"#{SEV_NAME[sev]}"]
+    for n in dict.fromkeys(_ORDER_RX.findall(text)):
+        out.append(f"#order_{n}")
+    for m in _USER_RX.finditer(text):
+        uid = m.group(1) or m.group(2)
+        if f"#id{uid}" not in out:
+            out.append(f"#id{uid}")
+    return " ".join(out[:6])
+
 
 _queue: asyncio.Queue | None = None
 _bot = None
@@ -49,22 +73,28 @@ def _now(fmt: str) -> str:
 
 
 def fmt_entry(text: str, level: str = "ℹ️", stamp: str | None = None) -> str:
-    """One log entry as an HTML card:
-    ❌ <b>Headline</b>  #tag
-    ├ detail
-    └ 🕒 12:30:05"""
+    """One log entry as a clean card:
+    🛒 <b>Order #5 created</b>
+    🟢 #order #ok #order_5
+    ┣ 🔹 buyer ➜ 123
+    ┗ 🕒 12:30:05"""
     text = str(text).strip()[:900]
     parts = [x.strip() for x in re.split(r"\s+\|\s+", text) if x.strip()]
     head, details = (parts[0] if parts else "-"), parts[1:]
+    # "Head: reason" -> head + reason as its own detail line (long error text stays readable)
+    if not details and ": " in head and len(head) > 45:
+        head, rest = head.split(": ", 1)
+        details = [f"reason: {rest}"]
     tag = TAG.get(level) or TAG.get(level.replace("\ufe0f", "")) or "info"
-    out = [f"{level} <b>{html.escape(head)}</b>  #{tag}"]
+    sev = SEV.get(tag, "🔵")
+    out = [f"{level} <b>{html.escape(head)}</b>", f"{sev} {_tags(text, tag)}"]
     for d in details:
         if ":" in d and d.index(":") < 25:
             k, v = d.split(":", 1)
-            out.append(f"├ <i>{html.escape(k.strip())}:</i> <code>{html.escape(v.strip())}</code>")
+            out.append(f"┣ 🔹 <b>{html.escape(k.strip())}</b> ➜ <code>{html.escape(v.strip())}</code>")
         else:
-            out.append(f"├ {html.escape(d)}")
-    out.append(f"└ 🕒 <code>{stamp or _now('%H:%M:%S')}</code>")
+            out.append(f"┣ ▫️ {html.escape(d)}")
+    out.append(f"┗ 🕒 <code>{stamp or _now('%H:%M:%S')}</code>")
     return "<blockquote>" + "\n".join(out) + "</blockquote>"
 
 
@@ -78,9 +108,15 @@ def push(text: str, level: str = "ℹ️"):
         pass
 
 
-def _header(n: int) -> str:
-    return (f"📋 <b>KHOUFU LOGS</b>  •  📅 <code>{_now('%d %b %Y')}</code>  •  {TZ_TXT}\n"
-            f"<i>{n} event{'s' if n != 1 else ''}</i>\n")
+def _header(entries: list) -> str:
+    n = len(entries)
+    counts = {k: sum(1 for e in entries if f"\n{k} #" in e) for k in ("🔴", "🟡", "🟢", "🔵")}
+    summary = "  ".join(f"{k} {v}" for k, v in counts.items() if v)
+    return (f"📊 <b>KHOUFU • LIVE LOGS</b>\n"
+            f"📅 <code>{_now('%d %b %Y')}</code>  ⏰ <code>{_now('%H:%M')}</code>  🌍 {TZ_TXT}\n"
+            f"📝 <b>{n}</b> event{'s' if n != 1 else ''}   {summary}\n"
+            f"#logs #d{_now('%d%b%Y').lower()}\n"
+            f"━━━━━━━━━━━━━━━━━━\n")
 
 
 async def _worker():
@@ -94,7 +130,7 @@ async def _worker():
                 entries.append(await asyncio.wait_for(_queue.get(), max(0.05, deadline - time.time())))
             except asyncio.TimeoutError:
                 break
-        text = (_header(len(entries)) + "\n".join(entries))[:4000]
+        text = (_header(entries) + "\n".join(entries))[:4000]
         if text.count("<blockquote>") != text.count("</blockquote>"):  # cut in the middle -> drop last
             text = text[:text.rfind("<blockquote>")]
         for _ in range(3):
