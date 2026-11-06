@@ -253,6 +253,10 @@ PREMIUM = {
     "🎯": "5350460637182993292", "🕯": "5350571717922167592", "🪓": "5350341795437911403",
 }
 
+# Stylish icon packs win over the default look
+from premium_style import STYLE  # noqa: E402
+PREMIUM.update(STYLE)
+
 # Emojis that are not in the pack -> closest matching premium emoji
 ALIAS = {
     "🔙": "👈",
