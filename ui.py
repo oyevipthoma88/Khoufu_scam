@@ -1,5 +1,7 @@
 """Shared button / message helpers (used by main.py and shop.py)."""
 import logging
+from copy import copy
+from emoji_registry import leading_emoji, verified_id
 
 from pyrogram.enums import ButtonStyle
 from pyrogram.errors import BadRequest, FloodWait, MessageNotModified
@@ -19,7 +21,7 @@ def bind(bot):
 
 def U(text: str, url: str) -> InlineKeyboardButton:
     """URL button."""
-    return InlineKeyboardButton(text, url=url)
+    return _decorate(InlineKeyboardButton(text, url=url), UI["icons"])
 
 # ------------------------------------------------------------ buttons (colour + premium emoji)
 # Each button spec: (text, callback_data, style, emoji_key)
@@ -47,15 +49,20 @@ from premium_emoji import PREMIUM  # noqa: E402
 
 
 def _auto_icon(text: str):
-    if not text:
-        return None
-    head = text.split(" ", 1)[0].replace("\ufe0f", "")
-    if head in PREMIUM:
-        return PREMIUM[head]
-    # "👮‍♂️x" / skin tones -> try the base emoji
-    base = head.split("\u200d")[0]
-    base = "".join(ch for ch in base if not 0x1F3FB <= ord(ch) <= 0x1F3FF)
-    return PREMIUM.get(base)
+    return leading_emoji(text)[1]
+
+
+def _decorate(button, icons, override=None):
+    button = copy(button)
+    cluster, automatic = leading_emoji(button.text)
+    eid = (verified_id(override) or verified_id(button.icon_custom_emoji_id) or automatic
+           or PREMIUM["▫"]) if icons else None
+    if eid and automatic:
+        label = button.text[len(cluster):].lstrip(" ")
+        if label:
+            button.text = label
+    button.icon_custom_emoji_id = eid
+    return button
 
 
 def B(text: str, data: str, style: ButtonStyle = D, key: str | None = None) -> tuple:
@@ -69,19 +76,13 @@ def build(rows, icons: bool | None = None) -> M:
         r = []
         for b in row:
             if isinstance(b, InlineKeyboardButton):
-                r.append(b)
+                r.append(_decorate(b, icons))
                 continue
             text, data, style, key = b
-            eid = (UI["emojis"].get(key) or _auto_icon(text)) if icons else None
-            if eid is not None and not str(eid).isdigit():
-                eid = None  # broken/old value in DB (e.g. 'add') – ignore instead of crashing
-            if eid:
-                # premium icon replaces the plain emoji at the start of the label
-                text = text.split(" ", 1)[1] if " " in text and not text[0].isalnum() else text
             if style == D:  # no plain grey buttons – every button gets a colour
                 style = R if data and any(x in data for x in (":cx:", ":del", ":rj:", "clear", "picdel", "owrm")) else P
-            r.append(InlineKeyboardButton(text, icon_custom_emoji_id=str(eid) if eid else None,
-                                          style=style, callback_data=data))
+            r.append(_decorate(InlineKeyboardButton(text, style=style, callback_data=data),
+                               icons, UI["emojis"].get(key)))
         out.append(r)
     return M(out)
 
@@ -100,11 +101,9 @@ async def safe_send(coro_factory):
     except MessageNotModified:
         return None
     except (BadRequest, ValueError) as e:
-        if not UI["icons"]:  # icons already off -> real error
+        if not UI["icons"] or not any(x in str(e).upper() for x in ("CUSTOM_EMOJI", "DOCUMENT_INVALID", "BUTTON_STYLE", "BUTTON_ICON")):
             raise
-        log.warning("Button icons rejected (%s) – disabling icons", e)
-        UI["icons"] = False
-        await db.set_ui("icons", False)
+        log.warning("Button icons rejected (%s) – retrying this message without icons", e)
         return await coro_factory(False)
 
 

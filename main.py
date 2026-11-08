@@ -22,6 +22,7 @@ import shop
 import ui
 import userbot
 from logchan import NOPREV
+from emoji_registry import valid_id, verify_custom_id
 import premium_text
 premium_text.install()  # premium emojis in every bot message text
 
@@ -612,6 +613,12 @@ async def handle_input(m: Message):
         if eid == "0":
             UI["emojis"].pop(key, None)
         else:
+            try:
+                eid = await verify_custom_id(bot, eid)
+            except Exception:
+                return await m.reply("⚠️ Telegram could not verify that emoji. Try again; it has not been saved.")
+            if not eid:
+                return await m.reply("❌ Invalid custom emoji ID. Send a real premium emoji.")
             UI["emojis"][key] = eid
             UI["icons"] = True
             await db.set_ui("icons", True)
@@ -792,7 +799,7 @@ async def main():
     except Exception as e:
         raise SystemExit(f"MongoDB connection failed: {e}")
     ui = await db.get_ui()
-    clean = {k: str(v) for k, v in dict(ui["emojis"]).items() if k in EMOJI_KEYS and str(v).isdigit()}
+    clean = {k: str(v) for k, v in dict(ui["emojis"]).items() if k in EMOJI_KEYS and valid_id(v)}
     if clean != dict(ui["emojis"]):
         await db.set_ui("emojis", clean)
         log.warning("Removed invalid button emoji IDs from DB")
@@ -800,6 +807,13 @@ async def main():
     for o in ui.get("owners") or []:
         set_owner(int(o), True)
     await bot.start()
+    for key, eid in list(UI["emojis"].items()):
+        try:
+            if not await verify_custom_id(bot, eid):
+                UI["emojis"].pop(key, None)
+        except Exception:
+            UI["emojis"].pop(key, None)
+    await db.set_ui("emojis", UI["emojis"])
     logchan.setup(bot)
     me = await bot.get_me()
     log.info("Bot started as @%s – owners: %s", me.username, config.OWNER_IDS)

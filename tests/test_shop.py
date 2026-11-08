@@ -139,6 +139,7 @@ def test_code_blocks_keep_plain_emoji():
 
 def test_bot_parser_adds_premium_only_for_bot():
     import asyncio
+    from pyrogram import raw
     from pyrogram.parser.parser import Parser
     import premium_text
     premium_text.install()
@@ -147,9 +148,9 @@ def test_bot_parser_adds_premium_only_for_bot():
     from pyrogram import enums
     C.parse_mode = U.parse_mode = enums.ParseMode.DEFAULT
     r = asyncio.run(Parser(C()).parse("**🎉 Done**"))
-    assert any(type(e).__name__ == "MessageEntityCustomEmoji" for e in r["entities"])
+    assert any(isinstance(e, raw.types.MessageEntityCustomEmoji) for e in r["entities"])
     r2 = asyncio.run(Parser(U()).parse("**🎉 Done**"))
-    assert not any(type(e).__name__ == "MessageEntityCustomEmoji" for e in r2["entities"] or [])
+    assert not any(isinstance(e, raw.types.MessageEntityCustomEmoji) for e in r2["entities"] or [])
 
 
 def test_log_entry_hashtags_and_severity():

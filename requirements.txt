@@ -3,3 +3,4 @@ TgCrypto-pyrofork
 motor==3.6.0
 dnspython
 phonenumbers
+regex==2026.4.4
