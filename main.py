@@ -72,7 +72,7 @@ Same username can't be used twice, so the bot tries `name`, `name1`, `name2`… 
 ⚠️ Telegram allows only a limited number of public links per account. Extra ones stay private with an invite link."""
 
 
-from ui import (B, BACK, D, EMOJI_KEYS, G, P, R, UI, back, build, edit, reply, safe_send, send)
+from ui import (B, BACK, D, EMOJI_KEYS, G, P, R, UI, back, build, edit, icon_status_line, reply, safe_send, send)
 
 
 def main_kb(auto: bool) -> list:
@@ -315,7 +315,7 @@ async def handle_cb(q: CallbackQuery):
                  f"Applied: {sum(1 for a in accs if a.get('applied'))}",
                  f"Auto apply: {'ON' if s['auto'] else 'OFF'}",
                  f"Start pic: {'✅' if UI['start_pic'] else '❌'} | Premium icons: {len(UI['emojis'])} "
-                 f"({'on' if UI['icons'] else 'off'})", ""]
+                 f"({'on' if UI['icons'] else 'off'})", icon_status_line(), ""]
         for k in db.KINDS:
             lines.append(f"**{KIND_LABEL[k]}**: " + ", ".join(
                 f"{FIELD_LABEL[f]} {'✅' if s[k].get(f) else '❌'}" for f in db.FIELDS))
@@ -326,7 +326,7 @@ async def handle_cb(q: CallbackQuery):
         return await edit(q, "👑 **Owner Panel**\n\n"
                              f"🖼 Start pic: {'set ✅' if UI['start_pic'] else 'not set'}\n"
                              f"✨ Premium button icons: {len(UI['emojis'])} set "
-                             f"({'enabled' if UI['icons'] else 'disabled'})", [
+                             f"({'enabled' if UI['icons'] else 'disabled'})\n{icon_status_line()}", [
             [B("🖼 Set Start Pic", "op:pic", G), B("🗑 Remove Pic", "op:picdel", R)],
             [B("✨ Button Emojis", "op:emo", P), B("👑 Owners", "op:own", G, "addowner")],
             [B(f"🎨 Icons: {'ON' if UI['icons'] else 'OFF'}", "op:icons", G if UI['icons'] else R)],
@@ -822,7 +822,8 @@ async def main():
     logchan.push(f"Bot started as @{me.username}", "🟢")
     for oid in config.OWNER_IDS:
         try:
-            await send(oid, "✅ Bot is online.", [[B("🏠 Open Menu", "home", P, "back")]])
+            await send(oid, "✅ **Bot is online.**", [[B("🏠 Open Menu", "home", P, "menu")]])
+            await send(oid, "🧪 **Premium icon check**\n\n" + icon_status_line())
         except Exception:
             pass
     await idle()
