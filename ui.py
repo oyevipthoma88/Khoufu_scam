@@ -94,17 +94,55 @@ def back(to: str) -> list:
     return [B("🔙 Back", to, D, "back")]
 
 
-async def safe_send(coro_factory):
-    """Send with premium icons; if Telegram rejects them, retry once without and remember."""
+ICON_STATUS = {"state": "unknown", "reason": ""}  # unknown | active | dropped | rejected
+
+
+def _sent_icons(markup) -> int:
     try:
-        return await coro_factory(None)
+        return sum(1 for row in markup.inline_keyboard for b in row if getattr(b, "icon_custom_emoji_id", None))
+    except Exception:
+        return 0
+
+
+def _check_echo(result):
+    """Telegram echoes the keyboard back. If our icons are missing there, Telegram silently dropped them."""
+    markup = getattr(result, "reply_markup", None)
+    if not UI["icons"] or markup is None or not getattr(markup, "inline_keyboard", None):
+        return
+    if _sent_icons(markup):
+        ICON_STATUS.update(state="active", reason="")
+    elif ICON_STATUS["state"] != "active":
+        ICON_STATUS.update(state="dropped", reason="Telegram removed the premium icons – the bot owner "
+                           "(BotFather account) needs an active Telegram Premium subscription.")
+        log.warning("Premium button icons silently dropped by Telegram: bot owner needs Telegram Premium")
+
+
+async def safe_send(coro_factory):
+    """Send with premium icons; if Telegram rejects them, retry once without and remember why."""
+    try:
+        result = await coro_factory(None)
+        _check_echo(result)
+        return result
     except MessageNotModified:
         return None
     except (BadRequest, ValueError) as e:
-        if not UI["icons"] or not any(x in str(e).upper() for x in ("CUSTOM_EMOJI", "DOCUMENT_INVALID", "BUTTON_STYLE", "BUTTON_ICON")):
+        err = str(e).upper()
+        if not UI["icons"] or not any(x in err for x in ("CUSTOM_EMOJI", "DOCUMENT_INVALID", "BUTTON_STYLE",
+                                                          "BUTTON_ICON", "PREMIUM", "EMOJI_INVALID")):
             raise
+        ICON_STATUS.update(state="rejected", reason=f"Telegram rejected the icons: {e}")
         log.warning("Button icons rejected (%s) – retrying this message without icons", e)
         return await coro_factory(False)
+
+
+def icon_status_line() -> str:
+    st = ICON_STATUS["state"]
+    if not UI["icons"]:
+        return "🔴 Premium icons: **OFF**"
+    return {"active": "🟢 Premium icons: **LIVE** on buttons",
+            "dropped": "🔴 Premium icons: **BLOCKED** – " + ICON_STATUS["reason"],
+            "rejected": "🔴 Premium icons: **REJECTED** – " + ICON_STATUS["reason"],
+            }.get(st, "🟡 Premium icons: checking…")
 
 
 async def reply(m: Message, text: str, rows=None):
