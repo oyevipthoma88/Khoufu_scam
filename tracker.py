@@ -21,7 +21,7 @@ _seen_today: dict[int, str] = {}
 
 
 def _owner(uid: int) -> bool:
-    return uid in config.OWNER_IDS
+    return uid in config.OWNER_IDS or uid in getattr(config, "EXTRA_OWNERS", ())
 
 
 def _btn_label(q) -> str:
@@ -86,7 +86,7 @@ async def _help(_, m):
            "/help – this message\n/cancel – stop current step")
     if owner:
         txt += ("\n\n👑 **Owner**\n/stats – full shop stats\n/user `id` – user details\n"
-                "/ban `id` • /unban `id`\n/broadcast – reply to any message to send it to all users")
+                "/ban `id` • /unban `id`\n/broadcast – reply (copy/forward) or `/broadcast text`\n/fbroadcast – forward post • /cbroadcast – clean copy")
     await core.reply(m, txt, [core.home_btn(owner)])
     raise StopPropagation
 
@@ -163,30 +163,130 @@ async def _ban_off(c, m):
     await _ban(c, m, False)
 
 
-async def _broadcast(c, m):
-    src = m.reply_to_message
-    if not src:
-        await m.reply("↩️ Reply to the message you want to send to all users with /broadcast")
-        raise StopPropagation
-    status = await m.reply("📣 Broadcasting…")
-    ok = fail = blocked = 0
-    async for u in db.users_col.find({"banned": {"$ne": True}}, {"_id": 1}):
-        try:
-            await src.copy(u["_id"])
-            ok += 1
-        except FloodWait as e:
-            await asyncio.sleep(int(e.value or 3) + 1)
+_PENDING: dict[int, object] = {}
+
+
+def _is_dead(e) -> bool:
+    n = type(e).__name__
+    return isinstance(e, (UserIsBlocked, InputUserDeactivated)) or n in (
+        "PeerIdInvalid", "UserDeactivated", "UserDeactivatedBan", "InputUserDeactivated", "ChatWriteForbidden")
+
+
+async def _send_one(c, src, uid: int, mode: str, text: str | None):
+    if text is not None:
+        return await c.send_message(uid, text)
+    if mode == "forward":
+        return await c.forward_messages(uid, src.chat.id, src.id)
+    return await src.copy(uid, reply_markup=src.reply_markup)
+
+
+def _bar(done: int, total: int) -> str:
+    pct = int(done * 100 / total) if total else 100
+    f = pct // 10
+    return f"{'▰' * f}{'▱' * (10 - f)} {pct}%"
+
+
+async def _run_broadcast(c, status, owner, src, mode: str, text: str | None):
+    q = {"banned": {"$ne": True}, "dead": {"$ne": True}}
+    total = await db.users_col.count_documents(q)
+    ok = fail = blocked = done = 0
+    reasons: dict[str, int] = {}
+    t0 = time.time()
+    label = "⏩ Forward" if mode == "forward" else "📤 Clean copy"
+    async for u in db.users_col.find(q, {"_id": 1}):
+        uid = u["_id"]
+        for _ in range(3):
             try:
-                await src.copy(u["_id"]); ok += 1
-            except Exception:
-                fail += 1
-        except (UserIsBlocked, InputUserDeactivated):
-            blocked += 1
-        except Exception:
+                await _send_one(c, src, uid, mode, text)
+                ok += 1
+                break
+            except FloodWait as e:
+                await asyncio.sleep(int(e.value or 3) + 1)
+            except Exception as e:  # noqa: BLE001
+                if _is_dead(e):
+                    blocked += 1
+                    await db.users_col.update_one({"_id": uid}, {"$set": {"dead": True}})
+                else:
+                    fail += 1
+                    k = type(e).__name__
+                    reasons[k] = reasons.get(k, 0) + 1
+                break
+        else:
             fail += 1
-        await asyncio.sleep(0.05)  # ~20 msg/s, under Telegram limits
-    lg(f"BROADCAST by {who(m.from_user)}: sent {ok}, blocked {blocked}, failed {fail}", "📣")
-    await status.edit_text(f"📣 **Broadcast done**\n✅ Sent: {ok}\n🚫 Blocked/deleted: {blocked}\n❌ Failed: {fail}")
+            reasons["FloodWait"] = reasons.get("FloodWait", 0) + 1
+        done += 1
+        if done % 50 == 0:
+            el = time.time() - t0
+            eta = int(el / done * (total - done))
+            try:
+                await status.edit_text(
+                    f"📣 **Broadcasting** · {label}\n{_bar(done, total)}\n\n"
+                    f"✅ Sent: `{ok}`\n🚫 Blocked/deleted: `{blocked}`\n❌ Failed: `{fail}`\n⏳ ETA: `{eta}s`")
+            except Exception:
+                pass
+        await asyncio.sleep(0.05)
+    secs = int(time.time() - t0)
+    why = "\n".join(f"  • `{k}` × {v}" for k, v in sorted(reasons.items(), key=lambda x: -x[1])) or "  • none"
+    lg(f"#BROADCAST {label} by {who(owner)}: total {total}, sent {ok}, blocked {blocked}, failed {fail}, "
+       f"took {secs}s | reasons: {reasons or 'none'}", "📣")
+    try:
+        await status.edit_text(
+            f"📣 **Broadcast done** · {label}\n{_bar(total, total)}\n\n"
+            f"👥 Target: `{total}`\n✅ Sent: `{ok}`\n🚫 Blocked/deleted: `{blocked}` (auto-skipped next time)\n"
+            f"❌ Failed: `{fail}`\n⏱ Time: `{secs}s`\n\n🧾 **Fail reasons**\n{why}")
+    except Exception:
+        pass
+
+
+async def _broadcast(c, m, mode: str | None = None):
+    src = m.reply_to_message
+    text = None
+    if not src:
+        parts = (m.text or "").split(None, 1)
+        if len(parts) < 2:
+            await m.reply(
+                "📣 **Broadcast**\n\n"
+                "• Reply to any post with `/broadcast` → choose Clean copy or Forward\n"
+                "• `/broadcast your text` → send text to everyone\n"
+                "• Reply with `/fbroadcast` → forward with original tag\n"
+                "• Reply with `/cbroadcast` → clean copy with buttons")
+            raise StopPropagation
+        text, mode = parts[1], "copy"
+    if mode is None:
+        _PENDING[m.from_user.id] = src
+        from pyrogram.types import InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb
+        await m.reply("📣 **How should I send this post?**", reply_markup=Kb([
+            [Btn("📤 Clean Copy", callback_data="bc:copy"), Btn("⏩ Forward", callback_data="bc:forward")],
+            [Btn("❌ Cancel", callback_data="bc:cancel")]]))
+        raise StopPropagation
+    status = await m.reply("📣 Starting broadcast…")
+    asyncio.create_task(_run_broadcast(c, status, m.from_user, src, mode, text))
+    raise StopPropagation
+
+
+async def _fbroadcast(c, m):
+    if not m.reply_to_message:
+        await m.reply("↩️ Reply to the post you want to forward with /fbroadcast")
+        raise StopPropagation
+    await _broadcast(c, m, "forward")
+
+
+async def _cbroadcast(c, m):
+    await _broadcast(c, m, "copy")
+
+
+async def _bc_cb(c, q):
+    if not _owner(q.from_user.id):
+        await q.answer("Owner only", show_alert=True)
+        raise StopPropagation
+    choice = q.data.split(":", 1)[1]
+    src = _PENDING.pop(q.from_user.id, None)
+    if choice == "cancel" or not src:
+        await q.message.edit_text("❌ Broadcast cancelled" if choice == "cancel" else "⚠️ Expired, send /broadcast again")
+        raise StopPropagation
+    await q.answer("Starting…")
+    await q.message.edit_text("📣 Starting broadcast…")
+    asyncio.create_task(_run_broadcast(c, q.message, q.from_user, src, choice, None))
     raise StopPropagation
 
 
@@ -206,4 +306,8 @@ def register(bot, owner_filter):
     bot.add_handler(MessageHandler(_user, p & owner_filter & filters.command("user")), g)
     bot.add_handler(MessageHandler(_ban_on, p & owner_filter & filters.command("ban")), g)
     bot.add_handler(MessageHandler(_ban_off, p & owner_filter & filters.command("unban")), g)
-    bot.add_handler(MessageHandler(_broadcast, p & owner_filter & filters.command("broadcast")), g)
+    live_owner = filters.create(lambda _, __, u: bool(u.from_user) and _owner(u.from_user.id))
+    bot.add_handler(MessageHandler(_broadcast, p & live_owner & filters.command(["broadcast", "bcast"])), g)
+    bot.add_handler(MessageHandler(_fbroadcast, p & live_owner & filters.command(["fbroadcast", "fbcast", "forward"])), g)
+    bot.add_handler(MessageHandler(_cbroadcast, p & live_owner & filters.command(["cbroadcast", "cbcast"])), g)
+    bot.add_handler(CallbackQueryHandler(_bc_cb, filters.regex(r"^bc:")), g)
