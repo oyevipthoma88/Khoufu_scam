@@ -576,6 +576,12 @@ async def handle_input(m: Message):
     uid = m.from_user.id
     st = STATE.get(uid)
     if not st:
+        try:
+            import shop_user
+            if await shop_user.route_pending_proof(m):
+                return
+        except Exception:
+            pass
         return await reply(m, "Use the menu 👇", [[B("🏠 Open Menu", "home", P, "back")]])
     step = st["step"]
 

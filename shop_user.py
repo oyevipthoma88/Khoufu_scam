@@ -461,9 +461,8 @@ async def user_input(m: Message, st: dict):
             return await reply(m, "This order is not waiting for payment any more.", [[B("🏠 Menu", "u:home", D)]])
         proof_file = _proof_media_id(m)
         proof_txt = (m.text or m.caption or "").strip()
-        if not proof_file and len(proof_txt) < 6:
-            return await m.reply("Please send a **screenshot** (photo or screenshot file) or the UTR / transaction ID "
-                                 "(6+ characters). A caption with the image is best.")
+        if not proof_file and len(proof_txt) < 4:
+            return await m.reply("Please send a **screenshot** (photo or file) or the UTR / transaction ID.")
         o2 = await db.move_order(oid, ["awaiting_payment"], "awaiting_approval",
                                  {"proof_file": proof_file, "proof_text": proof_txt[:200],
                                   "expires": db.now() + dt.timedelta(days=3)})
@@ -516,8 +515,11 @@ def _proof_media_id(m: Message) -> str | None:
     if m.photo:
         return m.photo.file_id
     doc = m.document
-    if doc and (doc.mime_type or "").startswith("image/"):
-        return doc.file_id
+    if doc:
+        mt = (doc.mime_type or "").lower()
+        fn = (doc.file_name or "").lower()
+        if mt.startswith("image/") or fn.endswith((".png", ".jpg", ".jpeg", ".webp", ".heic")):
+            return doc.file_id
     return None
 
 
@@ -543,7 +545,7 @@ async def route_pending_proof(m: Message) -> bool:
     Attach it to their most recent order that is still waiting for payment."""
     proof_file = _proof_media_id(m)
     proof_txt = (m.text or m.caption or "").strip()
-    if not proof_file and len(proof_txt) < 6:
+    if not proof_file and len(proof_txt) < 4:
         return False
     o = await db.orders_col.find_one({"user_id": m.from_user.id, "status": "awaiting_payment"},
                                      sort=[("_id", -1)])
@@ -584,16 +586,52 @@ async def sale_confirmed(q: CallbackQuery, oid: int, ok: bool):
         return await q.answer("🔒 Owner only", show_alert=True)
     o = await db.get_order(oid)
     if not o:
-        return await show(q, "Order not found.", [])
+        return await q.answer("Order not found.", show_alert=True)
+    if o.get("sale_ok") or o.get("sale_flag") or o.get("sale_handled"):
+        who_name = o.get("sale_handled_by_name") or "an owner"
+        res_str = "APPROVED" if o.get("sale_ok") else "DECLINED"
+        return await q.answer(f"Already {res_str} by {who_name}!", show_alert=True)
+
+    it = await db.get_stock(o.get("stock_id")) or {}
+    name = clean(q.from_user.first_name) or f"Owner {uid}"
     if not ok:
-        lg(f"Order #{oid} sale DECLINED by {who(q.from_user)} – flagged for owner review", "🚫")
-        await db.set_order(oid, {"sale_flag": True, "sale_flag_by": uid})
-        await notify_owners(f"🚩 **Sale #{oid} was DECLINED** by {who(q.from_user)}\n{order_line(o)}\n"
-                            "Check it manually in Shop Admin → Orders.", [[B("🧾 Orders", f"so:ord:{oid}", P)]])
-        return await show(q, f"🚩 Order #{oid} declined – all owners have been asked to review it.", [])
-    await db.set_order(oid, {"sale_ok": True, "sale_ok_by": uid})
+        lg(f"Order #{oid} sale DECLINED by {who(q.from_user)} – releasing stock", "🚫")
+        await db.set_order(oid, {
+            "sale_flag": True, "sale_flag_by": uid, "sale_handled_by_name": name,
+            "sale_flag_at": db.now(), "sale_handled": True, "status": "declined"
+        })
+        if o.get("stock_id"):
+            await db.release_stock(o["stock_id"])
+        await q.answer("❌ Sale declined! Stock reclaimed.", show_alert=True)
+        txt = (_sale_card(o, it, f"🚫 **SALE DECLINED – order #{oid}**") +
+               f"\n\n❌ **Declined by {name}**\nStock has been safely returned to available inventory.")
+        await show(q, txt, [])
+        try:
+            await send(o["user_id"], f"❌ **Notice for order #{oid}:**\nThe sale was declined by the seller. "
+                                     "If you made a payment, please contact the owner with your receipt.",
+                       [[B("🏠 Menu", "u:home", D)]])
+        except Exception:
+            pass
+        await notify_owners(f"🚩 **Sale #{oid} was DECLINED** by {who(q.from_user)}\n{order_line(o)}\nItem returned to stock.",
+                            [[B("🧾 Orders", f"so:ord:{oid}", P)]])
+        return
+
+    await db.set_order(oid, {
+        "sale_ok": True, "sale_ok_by": uid, "sale_handled_by_name": name,
+        "sale_ok_at": db.now(), "sale_handled": True
+    })
+    if o.get("stock_id"):
+        await db.update_stock(o["stock_id"], {"status": "sold", "sold_to": o["user_id"], "sold_at": db.now()})
     lg(f"Order #{oid} sale APPROVED by {who(q.from_user)}", "✅")
-    return await show(q, f"✅ Sale #{oid} confirmed. Nothing more to do – the buyer keeps the item.", [])
+    await q.answer("✅ Sale approved!", show_alert=False)
+    txt = (_sale_card(o, it, f"💸 **SALE APPROVED – order #{oid}**") +
+           f"\n\n✅ **Approved by {name}**\nDelivery confirmed safe – buyer keeps the item.")
+    await show(q, txt, [])
+    try:
+        await send(o["user_id"], f"✅ **Order #{oid} verified and approved by the stock owner!**\nYour account is ready to use safely.",
+                   [[B("📩 Get OTP", f"u:otp:{oid}", G)], [B("✅ I'm logged in", f"u:done:{oid}", P)], [B("🏠 Menu", "u:home", D)]])
+    except Exception:
+        pass
 
 
 async def delivery_view(o: dict):
@@ -659,7 +697,7 @@ async def deliver(o: dict):
         if not it:
             raise RuntimeError("stock item missing")
         if o["kind"] == "account":
-            await db.move_order(oid, ["approved"], "delivered")
+            await db.move_order(oid, ["approved"], "delivered", {"delivered_at": db.now()})
             o["status"] = "delivered"
             text, rows = await delivery_view(o)
             await send(uid, text, rows)
@@ -697,6 +735,8 @@ async def otp_flow(q: CallbackQuery, o: dict):
     oid = o["_id"]
     if o["status"] != "delivered" or o["kind"] != "account":
         return
+    if o.get("sale_flag") or o.get("status") in ("declined", "cancelled", "rejected"):
+        return await q.answer("❌ This sale was declined or cancelled. OTP is disabled.", show_alert=True)
     lk = lock(f"otp{oid}")
     if lk.locked():
         return await q.answer("⏳ Already checking for your code…", show_alert=False)

@@ -103,7 +103,7 @@ async def _fallback(_, m):
     if core.too_fast(m.from_user.id, 1.5):  # anti-spam: ignore message floods
         raise StopPropagation
     # proof sent after a restart / lost session must still reach the owner
-    if not core.is_owner(m.from_user.id) and await shop_user.route_pending_proof(m):
+    if await shop_user.route_pending_proof(m):
         raise StopPropagation
     await core.reply(m, "Use the menu 👇", [[B("🏠 Open Menu", "u:home", D)]])
     raise StopPropagation

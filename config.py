@@ -2,7 +2,8 @@ import os
 
 
 def _ints(value: str) -> list[int]:
-    return [int(x) for x in value.replace(",", " ").split() if x.strip().lstrip("-").isdigit()]
+    import re
+    return [int(x) for x in re.split(r"[\s,;:|]+", str(value or "")) if x.strip().lstrip("-").isdigit()]
 
 
 API_ID = int(os.environ.get("API_ID", "0"))

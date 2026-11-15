@@ -52,7 +52,15 @@ def bind(bot):
 
 
 def is_owner(uid: int) -> bool:
-    return uid in config.OWNER_IDS
+    if uid in config.OWNER_IDS:
+        return True
+    try:
+        import main
+        if uid in getattr(main, 'EXTRA_OWNERS', []):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 # ---------------------------------------------------------------- formatting
@@ -67,8 +75,14 @@ def clean(s) -> str:
 
 
 def who(u) -> str:
-    name = clean(" ".join(x for x in [u.first_name, u.last_name] if x) or "User")
-    return f"{name}" + (f" (@{u.username})" if u.username else "") + f" [{u.id}]"
+    fn = getattr(u, "first_name", "") or ""
+    ln = getattr(u, "last_name", "") or ""
+    parts = [str(x) for x in [fn, ln] if isinstance(x, str) and x.strip()]
+    name = clean(" ".join(parts) or "User")
+    un = getattr(u, "username", "")
+    un_str = f" (@{un})" if isinstance(un, str) and un else ""
+    uid = getattr(u, "id", 0)
+    return f"{name}{un_str} [{uid}]"
 
 
 def order_line(o: dict) -> str:
@@ -138,9 +152,13 @@ async def send_photo(chat_id: int, photo: str, caption: str, rows=None):
     try:
         return await retry(lambda: safe_send(lambda ic: BOT.send_photo(
             chat_id, photo, caption=caption[:1020], reply_markup=build(rows, ic) if rows else None)))
-    except Exception as e:
-        log.warning("photo send failed (%s) – sending text", e)
-        return await send(chat_id, caption, rows)
+    except Exception:
+        try:
+            return await retry(lambda: safe_send(lambda ic: BOT.send_document(
+                chat_id, photo, caption=caption[:1020], reply_markup=build(rows, ic) if rows else None)))
+        except Exception as e:
+            log.warning("media send failed (%s) – sending text", e)
+            return await send(chat_id, caption, rows)
 
 
 async def show(q: CallbackQuery, text: str, rows, photo: str | None = None):

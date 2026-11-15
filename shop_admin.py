@@ -296,6 +296,8 @@ async def admin_cb(q: CallbackQuery):
         return await order_detail(q, int(p[2]))
     if act in ("ap", "rj", "rd", "mc", "olo"):
         return await order_action(q, act, int(p[2]))
+    if act in ("sok", "sno"):
+        return await shop_user.sale_confirmed(q, int(p[2]), ok=(act == "sok"))
 
 
 def _lm_rows(back: str):
@@ -567,9 +569,15 @@ async def admin_input(m: Message, st: dict):
             await m.delete()
         except Exception:
             pass
-        lines = [x.strip() for x in text.splitlines() if x.strip()]
+        if m.document and ((m.document.file_name or "").lower().endswith((".txt", ".session")) or (m.document.mime_type or "").startswith("text/")):
+            try:
+                bio = await m.download(in_memory=True)
+                text = bio.getvalue().decode("utf-8", errors="ignore").strip()
+            except Exception as e:
+                return await m.reply(f"❌ Could not read file: {friendly_err(e)}" + CANCEL_TXT)
+        lines = [x.strip().strip("'").strip('"') for x in text.splitlines() if x.strip() and not x.strip().startswith("#")]
         if not lines:
-            return await m.reply("Send the session text." + CANCEL_TXT)
+            return await m.reply("Send the session text (or a .txt file)." + CANCEL_TXT)
         if st["purpose"] != "account":
             lines = lines[:1]
         pw = st.get("pw")
@@ -690,8 +698,24 @@ async def after_login(m: Message, purpose: str, docs: list[dict], pw: str | None
         added, dup = [], []
         tag = ADD_TAG.pop(uid, "normal")
         for d in docs:
-            if await db.stock_col.find_one({"kind": "account", "uid": d["uid"], "status": {"$in": ["available", "reserved"]}}):
-                dup.append(d["phone"])
+            existing = await db.stock_col.find_one({"kind": "account", "uid": d["uid"]})
+            if existing and existing.get("status") in ("available", "reserved"):
+                has_active = False
+                if existing.get("status") == "reserved":
+                    has_active = bool(await db.orders_col.find_one({
+                        "stock_id": existing["_id"],
+                        "status": {"$in": ["awaiting_payment", "awaiting_approval"]}
+                    }))
+                if has_active:
+                    dup.append(f"{d['phone']} (in checkout)")
+                    continue
+                await db.update_stock(existing["_id"], {
+                    "status": "available", "session": d["session"], "phone": d["phone"],
+                    "country": d["country"], "country_name": d["country_name"], "password": pw,
+                    "title": f"{d['country_name']} account", "tg_name": d["name"], "tag": tag,
+                    "added_by": uid, "added_by_name": m.from_user.first_name or "", "updated": db.now(),
+                }, unset={"reserved_by": "", "reserved_at": ""})
+                added.append(f"{shop_tg.flag(d['country'])} +{d['phone']} (updated)")
                 continue
             await db.add_stock({"kind": "account", "uid": d["uid"], "session": d["session"], "phone": d["phone"],
                                 "country": d["country"], "country_name": d["country_name"], "password": pw,

@@ -130,9 +130,10 @@ def link_of(chat: dict) -> str:
 def telethon_to_pyrogram(s: str) -> tuple[str, bool]:
     """Convert a Telethon string session to Pyrogram format if needed.
     Returns (session, needs_user_id_fix)."""
-    s = s.strip()
-    if s.startswith("1") and len(s) in (353, 369):
-        data = base64.urlsafe_b64decode(s[1:] + "=" * (-len(s[1:]) % 4))
+    s = s.strip().strip("'").strip('"')
+    raw_body = s[1:].rstrip("=")
+    if s.startswith("1") and len(raw_body) in (351, 367):
+        data = base64.urlsafe_b64decode(raw_body + "=" * (-len(raw_body) % 4))
         ip_len = 4 if len(data) == 263 else 16
         dc_id, _ip, _port, key = struct.unpack(f">B{ip_len}sH256s", data)
         packed = struct.pack(">BI?256sQ?", dc_id, config.API_ID, False, key, 1, False)
