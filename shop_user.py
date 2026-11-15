@@ -101,7 +101,7 @@ async def home_view(uid: int, name: str):
         [B("📢 Channel", "u:buy:channel:0", G, "u_chan"), B("👥 Group", "u:buy:group:0", G, "u_grp")],
         [B("🤖 Bot", "u:buy:bot:0", G, "u_bot"), B("📚 Method", "u:buy:method:0", G, "u_meth")],
         [B("🧾 My Orders", "u:orders", P, "u_orders"), B("🎟 Redeem", "u:redeem", P, "u_redeem")],
-        [ui.U("📣 Updates", _tg_link(upd)) if upd else B("📣 Updates", "u:upd", P, "u_upd"),
+        [ui.U("📢 Updates", _tg_link(upd)) if upd else B("📢 Updates", "u:upd", P, "u_upd"),
          B("📖 How to buy", "u:tut", P, "u_tut"),
          ui.U("👑 Support", _tg_link(con)) if con else B("👑 Support", "u:owner", P, "u_owner")],
     ]
@@ -185,7 +185,7 @@ async def user_cb(q: CallbackQuery):
     if act == "owner":
         return await show(q, "👑 Owner contact is not set yet.", [[B("🔙 Back", "u:home", D, "back")]])
     if act == "upd":
-        return await show(q, "📣 Update channel is not set yet.", [[B("🔙 Back", "u:home", D, "back")]])
+        return await show(q, "📢 Update channel is not set yet.", [[B("🔙 Back", "u:home", D, "back")]])
     if act == "buy":
         return await buy_list(q, parts)
     if act == "acc":
@@ -227,7 +227,7 @@ async def buy_list(q: CallbackQuery, parts: list[str]):
         back = [B("🔙 Back", "u:buy:account", D, "back")]
         rows_c = await db.account_countries(core.tag_query(tag))
         if not rows_c:
-            return await show(q, f"😔 **{core.TAGS[tag]} accounts are out of stock** right now.\nCheck again later or tap 📣 Update Channel.", [back])
+            return await show(q, f"😔 **{core.TAGS[tag]} accounts are out of stock** right now.\nCheck again later or tap 📢 Update Channel.", [back])
         lines, rows = [f"📱 **{core.TAGS[tag]} account stock**\n"], []
         for c in rows_c:
             cc = c["_id"]
@@ -347,7 +347,7 @@ async def pay_screen(q: CallbackQuery, o: dict, shop: dict, bal: float | None = 
     if shop.get("upi"):
         pay.append(f"🏦 UPI: `{shop['upi']}`")
     if shop.get("qr"):
-        pay.append("📷 Scan the QR code")
+        pay.append("🖼 Scan the QR code")
     text = (f"💳 **SECURE CHECKOUT**\n━━━━━━━━━━━━━━━━━━\n{KIND_ICON[o['kind']]} **{clean(o['title'])}**\n"
             f"💰 Total: **{money(o['price'])}**   •   👛 Wallet: {money(bal)}\n━━━━━━━━━━━━━━━━━━\n"
             + ("\n".join(pay) + "\n\n" if pay else "") +
@@ -459,10 +459,11 @@ async def user_input(m: Message, st: dict):
         if not o or o["status"] != "awaiting_payment":
             SSTATE.pop(uid, None)
             return await reply(m, "This order is not waiting for payment any more.", [[B("🏠 Menu", "u:home", D)]])
-        proof_file = m.photo.file_id if m.photo else None
+        proof_file = _proof_media_id(m)
         proof_txt = (m.text or m.caption or "").strip()
         if not proof_file and len(proof_txt) < 6:
-            return await m.reply("Please send a **screenshot** (photo) or the UTR / transaction ID (6+ characters).")
+            return await m.reply("Please send a **screenshot** (photo or screenshot file) or the UTR / transaction ID "
+                                 "(6+ characters). A caption with the image is best.")
         o2 = await db.move_order(oid, ["awaiting_payment"], "awaiting_approval",
                                  {"proof_file": proof_file, "proof_text": proof_txt[:200],
                                   "expires": db.now() + dt.timedelta(days=3)})
@@ -472,10 +473,7 @@ async def user_input(m: Message, st: dict):
         lg(f"Payment proof for order #{oid} from {who(m.from_user)}", "🧾")
         await reply(m, f"✅ **Payment submitted** \nThe owner will verify it shortly – "
                        "you'll get a message here as soon as it's approved.", [[B("🏠 Menu", "u:home", D)]])
-        txt = (f"🧾 **New payment – Order #{oid}**\n\n👤 {who(m.from_user)}\n{order_line(o2)}"
-               + (f"\n🔖 UTR: `{proof_txt}`" if proof_txt else ""))
-        await notify_owners(txt, [[B("✅ Approve", f"so:ap:{oid}", G), B("❌ Reject", f"so:rj:{oid}", R)]],
-                            photo=proof_file)
+        await _send_proof_to_owners(oid, o2, m.from_user, proof_file, proof_txt)
         return
 
     if step == "redeem":
@@ -513,8 +511,89 @@ async def user_input(m: Message, st: dict):
 
 
 # ================================================================ delivery
+def _proof_media_id(m: Message) -> str | None:
+    """Accept photo, screenshot-as-file, or any image document as proof."""
+    if m.photo:
+        return m.photo.file_id
+    doc = m.document
+    if doc and (doc.mime_type or "").startswith("image/"):
+        return doc.file_id
+    return None
+
+
+async def _send_proof_to_owners(oid: int, o: dict, buyer, proof_file: str | None, proof_txt: str):
+    """Notify every owner + the log channel. A failure to reach one owner never blocks the others."""
+    txt = (f"🧾 **New payment – Order #{oid}**\n\n👤 {who(buyer)}\n{order_line(o)}"
+           + (f"\n🔖 UTR: `{proof_txt}`" if proof_txt else ""))
+    rows = [[B("✅ Approve", f"so:ap:{oid}", G), B("❌ Reject", f"so:rj:{oid}", R)]]
+    await notify_owners(txt, rows, photo=proof_file)
+    lc = config.LOG_CHANNEL
+    if lc:
+        try:
+            if proof_file:
+                await core.send_photo(lc, proof_file, txt, rows)
+            else:
+                await core.send(lc, txt, rows)
+        except Exception as e:
+            lg(f"Proof copy to log channel failed: {friendly_err(e)}", "⚠️")
+
+
+async def route_pending_proof(m: Message) -> bool:
+    """A buyer replied with the proof after a restart / lost session.
+    Attach it to their most recent order that is still waiting for payment."""
+    proof_file = _proof_media_id(m)
+    proof_txt = (m.text or m.caption or "").strip()
+    if not proof_file and len(proof_txt) < 6:
+        return False
+    o = await db.orders_col.find_one({"user_id": m.from_user.id, "status": "awaiting_payment"},
+                                     sort=[("_id", -1)])
+    if not o:
+        return False
+    o2 = await db.move_order(o["_id"], ["awaiting_payment"], "awaiting_approval",
+                             {"proof_file": proof_file, "proof_text": proof_txt[:200],
+                              "expires": db.now() + dt.timedelta(days=3)})
+    if not o2:
+        return False
+    lg(f"Payment proof (recovered) for order #{o['_id']} from {who(m.from_user)}", "🧾")
+    await reply(m, f"✅ **Payment received for order #{o['_id']}** – the owner will verify it shortly.",
+                [[B("🏠 Menu", "u:home", D)]])
+    await _send_proof_to_owners(o["_id"], o2, m.from_user, proof_file, proof_txt)
+    return True
+
+
 def _pw(it: dict) -> str:
     return it.get("password") or "none"
+
+
+async def _sale_approval(o: dict, it: dict):
+    """Sale card with Approve / Decline buttons to the owner who added the stock (+ log channel copy)."""
+    rows = [[B("✅ Approve", f"so:sok:{o['_id']}", G), B("❌ Decline", f"so:sno:{o['_id']}", R)]]
+    await core.notify_adder(it, _sale_card(o, it, "💸 **Your stock was SOLD!**") +
+                            "\n\nConfirm this sale so the delivery stays final.", rows)
+    lc = config.LOG_CHANNEL
+    if lc:
+        try:
+            await core.send(lc, _sale_card(o, it, f"💸 **SALE – order #{o['_id']}**"), rows)
+        except Exception:
+            pass
+
+
+async def sale_confirmed(q: CallbackQuery, oid: int, ok: bool):
+    uid = q.from_user.id
+    if not core.is_owner(uid):
+        return await q.answer("🔒 Owner only", show_alert=True)
+    o = await db.get_order(oid)
+    if not o:
+        return await show(q, "Order not found.", [])
+    if not ok:
+        lg(f"Order #{oid} sale DECLINED by {who(q.from_user)} – flagged for owner review", "🚫")
+        await db.set_order(oid, {"sale_flag": True, "sale_flag_by": uid})
+        await notify_owners(f"🚩 **Sale #{oid} was DECLINED** by {who(q.from_user)}\n{order_line(o)}\n"
+                            "Check it manually in Shop Admin → Orders.", [[B("🧾 Orders", f"so:ord:{oid}", P)]])
+        return await show(q, f"🚩 Order #{oid} declined – all owners have been asked to review it.", [])
+    await db.set_order(oid, {"sale_ok": True, "sale_ok_by": uid})
+    lg(f"Order #{oid} sale APPROVED by {who(q.from_user)}", "✅")
+    return await show(q, f"✅ Sale #{oid} confirmed. Nothing more to do – the buyer keeps the item.", [])
 
 
 async def delivery_view(o: dict):
@@ -604,7 +683,7 @@ async def deliver(o: dict):
             await complete_order(o)
         lg(f"SOLD #{oid} | {order_line(o)} | buyer {uid} @{o.get('username') or '-'} | "
            f"stock {it.get('phone') and '+' + it['phone'] or it.get('title')} | added by {it.get('added_by')}", "💸")
-        await core.notify_adder(it, _sale_card(o, it, "💸 **Your stock was SOLD!**"))
+        await _sale_approval(o, it)
     except Exception as e:
         core.log.exception("deliver failed")
         lg(f"Delivery FAILED for order #{oid}: {friendly_err(e)}", "❌")
@@ -709,7 +788,7 @@ async def run_claim(oid: int) -> tuple[str, list]:
             lg(f"Ownership transfer FAILED order #{oid}: {reason}", "❌")
             if later:
                 await db.move_order(oid, ["transferring"], "delivered")
-                return f"⏳ {reason}", again
+                return f"⌛ {reason}", again
             return await _manual(o, reason)
         await complete_order(o)
         return (f"🎉 **Ownership transferred!**\n**{title}** is now owned by ID `{target}`.\n"
@@ -747,6 +826,9 @@ async def reaper():
     while True:
         await asyncio.sleep(60)
         try:
+            n = await db.sweep_orphans()
+            if n:
+                lg(f"Released {n} stuck reserved item(s) back to stock", "♻️")
             for o in await db.stale_unpaid(db.now()):
                 if await cancel_order(o, "expired"):
                     lg(f"Order #{o['_id']} expired – item back in stock", "⌛")
