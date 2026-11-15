@@ -21,7 +21,13 @@ async def _has_state(_, __, m):
     return bool(m.from_user) and m.from_user.id in SSTATE
 
 HAS_STATE = filters.create(_has_state)
-CMDS = ["start", "menu", "cancel"]
+
+
+async def _nocmd(_, __, m):
+    return not ((m.text or m.caption or "").startswith("/"))
+
+
+NOCMD = filters.create(_nocmd)
 
 
 async def _cb(_, q):
@@ -62,6 +68,19 @@ async def _cancel(_, m):
 async def _input(_, m):
     uid = m.from_user.id
     st = SSTATE.get(uid)
+    if st:
+        if "t" not in st:
+            st["t"] = time.time()
+        elif time.time() - st["t"] > 1800:
+            await clear_state(uid)
+            SSTATE.pop(uid, None)
+            st = None
+            try:
+                await core.reply(m, "⌛ Session expired – start again from the menu.",
+                                 [core.home_btn(core.is_owner(uid))])
+            except Exception:
+                pass
+            raise StopPropagation
     try:
         if st:
             if core.is_owner(uid) and st["step"] not in ("proof", "redeem", "target"):
@@ -83,6 +102,9 @@ async def _input(_, m):
 async def _fallback(_, m):
     if core.too_fast(m.from_user.id, 1.5):  # anti-spam: ignore message floods
         raise StopPropagation
+    # proof sent after a restart / lost session must still reach the owner
+    if not core.is_owner(m.from_user.id) and await shop_user.route_pending_proof(m):
+        raise StopPropagation
     await core.reply(m, "Use the menu 👇", [[B("🏠 Open Menu", "u:home", D)]])
     raise StopPropagation
 
@@ -94,7 +116,7 @@ def register(bot):
     bot.add_handler(CallbackQueryHandler(_cb, filters.regex(r"^(u|so):")), g)
     bot.add_handler(MessageHandler(_start, filters.private & ~OWNER & filters.command(["start", "menu"])), g)
     bot.add_handler(MessageHandler(_cancel, filters.private & filters.command("cancel") & (~OWNER | HAS_STATE)), g)
-    bot.add_handler(MessageHandler(_input, filters.private & HAS_STATE & ~filters.command(CMDS)), g)
+    bot.add_handler(MessageHandler(_input, filters.private & HAS_STATE & NOCMD), g)
     bot.add_handler(MessageHandler(_fallback, filters.private & ~OWNER), g)
 
 
