@@ -1,0 +1,4 @@
+    if act in ("ap", "rj", "rd", "mc", "olo"):
+        return await order_action(q, act, int(p[2]))
+    if act in ("sok", "sno"):  # sale confirmation from the adder / log channel card
+        return await shop_user.sale_confirmed(q, int(p[2]), ok=(act == "sok"))
