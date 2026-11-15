@@ -14,6 +14,9 @@ DB_NAME = os.environ.get("DB_NAME", "khoufu_bot")
 
 # Multiple owners: "123456 987654" or "123456,987654"
 OWNER_IDS = _ints(os.environ.get("OWNER_IDS", ""))
+# Owners added from inside the bot (filled at runtime from the DB). Lives here so no module
+# ever needs `import main` (that re-ran main.py and created a second, never-started bot).
+EXTRA_OWNERS: list[int] = []
 
 CHANNEL_COUNT = int(os.environ.get("CHANNEL_COUNT", "10"))
 GROUP_COUNT = int(os.environ.get("GROUP_COUNT", "10"))

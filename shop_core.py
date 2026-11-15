@@ -46,21 +46,20 @@ STATUS_TXT = {
 }
 
 
-def bind(bot):
+def bind(bot, force: bool = False):
+    """Remember the bot client. The first client wins: a later, different client (e.g. from an accidental
+    second import of main.py) can never silently replace the running one. main() re-binds with force=True."""
     global BOT
+    if BOT is not None and BOT is not bot and not force:
+        log.warning("Ignored attempt to re-bind shop to a different bot client")
+        return
     BOT = bot
 
 
 def is_owner(uid: int) -> bool:
-    if uid in config.OWNER_IDS:
-        return True
-    try:
-        import main
-        if uid in getattr(main, 'EXTRA_OWNERS', []):
-            return True
-    except Exception:
-        pass
-    return False
+    # Never `import main` here: under `python main.py` that re-executes the whole file and swaps in a
+    # second, never-started Client ("Client has not been started yet" on /start).
+    return uid in config.OWNER_IDS or uid in config.EXTRA_OWNERS
 
 
 # ---------------------------------------------------------------- formatting
@@ -94,6 +93,10 @@ def friendly_err(e: Exception) -> str:
     s = str(e) or n
     if isinstance(e, FloodWait):
         return f"Telegram flood limit – wait {e.value}s"
+    if isinstance(e, ConnectionError) or "not been started" in s:
+        return "Bot is reconnecting to Telegram – try again in a moment"
+    if isinstance(e, asyncio.TimeoutError):
+        return "Telegram did not answer in time – try again"
     if "AUTH_KEY" in s or "SESSION_REVOKED" in s or "USER_DEACTIVATED" in s or "Session dead" in s:
         return "Session is dead / logged out"
     return s[:250]
@@ -134,13 +137,39 @@ def price_for_country(shop: dict, cc: str, tag: str = "normal") -> float:
 
 
 # ---------------------------------------------------------------- sending (flood safe)
+MAX_BOT_WAIT = config.MAX_FLOOD_WAIT  # longer flood waits are raised instead of freezing the bot
+
+
+async def ensure_connected() -> bool:
+    """Make sure the bound bot client is connected; try to start it once if it is not."""
+    if BOT is None:
+        return False
+    if BOT.is_connected:
+        return True
+    try:
+        await BOT.start()
+        log.warning("Bot client was not connected – started it again")
+    except Exception as e:
+        log.error("Could not (re)start bot client: %r", e)
+    return bool(BOT.is_connected)
+
+
 async def retry(fn, *a, **kw):
+    """Retry on flood waits (short ones only) and on a dropped connection (once, after reconnecting)."""
+    reconnected = False
     for _ in range(4):
         try:
             return await fn(*a, **kw)
         except FloodWait as e:
+            wait = int(e.value or 3) + 1
+            if wait > MAX_BOT_WAIT:
+                raise
             logchan.push(f"Bot flood wait {e.value}s – retrying", "⏳")
-            await asyncio.sleep(int(e.value or 3) + 1)
+            await asyncio.sleep(wait)
+        except ConnectionError:
+            if reconnected or not await ensure_connected():
+                raise
+            reconnected = True
     return await fn(*a, **kw)
 
 

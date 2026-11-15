@@ -48,27 +48,58 @@ async def _force_list() -> list[dict]:
     return out
 
 
+GATE_TIMEOUT = 15  # seconds per channel check – a slow channel must never hang /start
+
+
+def _is_temporary(e: Exception) -> bool:
+    """Our own connection / timeout problem – NOT a channel setup problem, so owners are not told to fix admin."""
+    return isinstance(e, (ConnectionError, asyncio.TimeoutError, OSError)) or "not been started" in str(e)
+
+
+async def _check_one(ch: dict, uid: int):
+    """True = joined, False = not joined, Exception = could not check."""
+    try:
+        m = await asyncio.wait_for(retry(core.BOT.get_chat_member, ch["chat"], uid), GATE_TIMEOUT)
+        return m.status not in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED)
+    except UserNotParticipant:
+        return False
+    except Exception as e:
+        return e
+
+
+async def _warn_force(ch: dict, e: Exception):
+    key = str(ch["chat"])
+    if time.time() - _warned_force.get(key, 0) <= 3600:
+        return
+    _warned_force[key] = time.time()
+    lg(f"Must-join check failed for {ch['title']} ({ch['chat']}): {friendly_err(e)} – "
+       "make the bot ADMIN there. Users are let through meanwhile.", "⚠️")
+    await notify_owners(f"⚠️ Must-join check failed for **{clean(ch['title'])}**: {friendly_err(e)}\n"
+                        "Add the bot as admin in that channel. Until then users are not blocked.")
+
+
 async def missing_channels(uid: int, use_cache: bool = True) -> list[dict]:
     if use_cache and _ok_until.get(uid, 0) > time.time():
         return []
-    miss = []
-    for ch in await _force_list():
-        try:
-            m = await retry(core.BOT.get_chat_member, ch["chat"], uid)
-            if m.status in (ChatMemberStatus.LEFT, ChatMemberStatus.BANNED):
-                miss.append(ch)
-        except UserNotParticipant:
+    chans = await _force_list()
+    results = await asyncio.gather(*(_check_one(ch, uid) for ch in chans)) if chans else []
+    miss, unsure = [], False
+    for ch, res in zip(chans, results):
+        if res is False:
             miss.append(ch)
-        except Exception as e:  # bot not admin / chat gone: don't lock everybody out, tell the owners once
-            key = str(ch["chat"])
-            if time.time() - _warned_force.get(key, 0) > 3600:
-                _warned_force[key] = time.time()
-                lg(f"Must-join check failed for {ch['title']} ({ch['chat']}): {friendly_err(e)} – "
-                   "make the bot ADMIN there. Users are let through meanwhile.", "⚠️")
-                await notify_owners(f"⚠️ Must-join check failed for **{clean(ch['title'])}**: {friendly_err(e)}\n"
-                                    "Add the bot as admin in that channel. Until then users are not blocked.")
-    if not miss:
-        _ok_until[uid] = time.time() + 300
+        elif isinstance(res, Exception):
+            # can't check: never lock everybody out. Only real setup problems are reported to the owners.
+            if _is_temporary(res):
+                unsure = True
+                core.log.warning("must-join check for %s skipped (temporary): %r", ch["chat"], res)
+            else:
+                await _warn_force(ch, res)
+    if len(_ok_until) > 20000:
+        now = time.time()
+        for k in [k for k, v in _ok_until.items() if v < now]:
+            _ok_until.pop(k, None)
+    if not miss and not unsure:
+        _ok_until[uid] = time.time() + 300  # only cache a REAL pass
     return miss
 
 

@@ -14,8 +14,12 @@ log = logging.getLogger("ui")
 _bot = None
 
 
-def bind(bot):
+def bind(bot, force: bool = False):
+    """First client wins (see shop_core.bind); main() re-binds the started client with force=True."""
     global _bot
+    if _bot is not None and _bot is not bot and not force:
+        log.warning("Ignored attempt to re-bind ui to a different bot client")
+        return
     _bot = bot
 
 

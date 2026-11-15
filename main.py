@@ -1,5 +1,14 @@
 """Khoufu Account Manager Bot – owner-only control panel."""
+import sys
+
+# `python main.py` runs this file as `__main__`. If any module later does `import main`, Python would run
+# the whole file AGAIN as a new module, build a second Client that is never started and re-bind every
+# helper to it -> "Client has not been started yet" on /start. Aliasing makes `import main` reuse this run.
+if __name__ == "__main__":
+    sys.modules.setdefault("main", sys.modules[__name__])
+
 import asyncio
+import os
 import logging
 import time
 
@@ -86,7 +95,7 @@ def main_kb(auto: bool) -> list:
     ]
 
 
-EXTRA_OWNERS: list[int] = []  # owners added from the bot (saved in DB)
+EXTRA_OWNERS: list[int] = config.EXTRA_OWNERS  # owners added from the bot (saved in DB) – same list object
 
 
 def set_owner(oid: int, on: bool):
@@ -798,21 +807,65 @@ async def expire_logins():
                     pass
 
 
+# ------------------------------------------------------------ watchdog
+WATCHDOG_EVERY = 60      # seconds between health checks
+WATCHDOG_FAILS = 5       # consecutive failed checks before the process restarts
+
+
+async def watchdog():
+    """Keep the bot alive: reconnect if the client dropped, restart the worker if Telegram stays unreachable."""
+    fails = 0
+    while True:
+        await asyncio.sleep(WATCHDOG_EVERY)
+        try:
+            if not bot.is_connected:
+                log.warning("Bot client disconnected – starting it again")
+                await bot.start()
+            await asyncio.wait_for(bot.get_me(), timeout=30)
+            if fails:
+                logchan.push(f"Bot connection recovered after {fails} failed check(s)", "🟢")
+            fails = 0
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            fails += 1
+            log.warning("Health check %s/%s failed: %r", fails, WATCHDOG_FAILS, e)
+            if fails >= WATCHDOG_FAILS:
+                log.error("Bot unreachable for %s checks – exiting so the host restarts the worker", fails)
+                logging.shutdown()
+                os._exit(1)
+
+
+def _loop_errors(loop, ctx):
+    """Background task crashes are logged instead of disappearing silently."""
+    exc = ctx.get("exception")
+    msg = ctx.get("message", "")
+    log.error("Unhandled background error: %s %r", msg, exc)
+    try:
+        logchan.push(f"Background error: {msg} {exc!r}"[:300], "❌")
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------ run
 async def main():
+    asyncio.get_running_loop().set_exception_handler(_loop_errors)
     try:
         await db.ping()
     except Exception as e:
         raise SystemExit(f"MongoDB connection failed: {e}")
-    ui = await db.get_ui()
-    clean = {k: str(v) for k, v in dict(ui["emojis"]).items() if k in EMOJI_KEYS and valid_id(v)}
-    if clean != dict(ui["emojis"]):
+    ui_doc = await db.get_ui()
+    clean = {k: str(v) for k, v in dict(ui_doc["emojis"]).items() if k in EMOJI_KEYS and valid_id(v)}
+    if clean != dict(ui_doc["emojis"]):
         await db.set_ui("emojis", clean)
         log.warning("Removed invalid button emoji IDs from DB")
-    UI.update(emojis=clean, icons=bool(ui["icons"]), start_pic=ui["start_pic"])
-    for o in ui.get("owners") or []:
+    UI.update(emojis=clean, icons=bool(ui_doc["icons"]), start_pic=ui_doc["start_pic"])
+    for o in ui_doc.get("owners") or []:
         set_owner(int(o), True)
     await bot.start()
+    # Safety net: every helper module must talk to THIS started client.
+    ui.bind(bot, force=True)
+    shop.core.bind(bot, force=True)
     for key, eid in list(UI["emojis"].items()):
         try:
             if not await verify_custom_id(bot, eid):
@@ -824,6 +877,7 @@ async def main():
     me = await bot.get_me()
     log.info("Bot started as @%s – owners: %s", me.username, config.OWNER_IDS)
     asyncio.create_task(expire_logins())
+    asyncio.create_task(watchdog())
     shop.start_background()
     logchan.push(f"Bot started as @{me.username}", "🟢")
     for oid in config.OWNER_IDS:

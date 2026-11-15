@@ -55,7 +55,10 @@ async def _start(c, m):
     except Exception as e:
         core.log.exception("start failed")
         lg(f"/start error for {m.from_user.id}: {friendly_err(e)}", "❌")
-        await m.reply("⚠️ Something went wrong, please send /start again.")
+        try:
+            await core.retry(m.reply, "⚠️ Something went wrong, please send /start again.")
+        except Exception:
+            pass
     raise StopPropagation
 
 
