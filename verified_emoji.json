@@ -928,14 +928,14 @@
       "pack": "NewsEmoji"
     },
     "👤": {
-      "id": "5373012449597335010",
+      "id": "6039352582344808994",
       "emoji": "👤",
-      "pack": "RestrictedEmoji"
+      "pack": "GlassIcons"
     },
     "👥": {
-      "id": "5372926953978341366",
+      "id": "5904771654730391536",
       "emoji": "👥",
-      "pack": "RestrictedEmoji"
+      "pack": "ShopIcons"
     },
     "🫂": {
       "id": "5370867268051806190",
@@ -2458,9 +2458,9 @@
       "pack": "RestrictedEmoji"
     },
     "🎟": {
-      "id": "5377599075237502153",
+      "id": "5895293752829808957",
       "emoji": "🎟",
-      "pack": "RestrictedEmoji"
+      "pack": "TgPremiumIcon"
     },
     "🎭": {
       "id": "5359441070201513074",
@@ -2603,9 +2603,9 @@
       "pack": "RestrictedEmoji"
     },
     "🚀": {
-      "id": "5445284980978621387",
+      "id": "5379634228310851732",
       "emoji": "🚀",
-      "pack": "RestrictedEmoji"
+      "pack": "CryptoIcons"
     },
     "🛸": {
       "id": "5319139188744936824",
@@ -3028,9 +3028,9 @@
       "pack": "NewsEmoji"
     },
     "🛒": {
-      "id": "5431499171045581032",
+      "id": "5229064374403998351",
       "emoji": "🛒",
-      "pack": "RestrictedEmoji"
+      "pack": "NewsEmoji"
     },
     "🎁": {
       "id": "5938540495792771769",
@@ -3173,14 +3173,14 @@
       "pack": "RestrictedEmoji"
     },
     "📚": {
-      "id": "5373098009640836781",
+      "id": "6037075352029765780",
       "emoji": "📚",
-      "pack": "RestrictedEmoji"
+      "pack": "GlassIcons"
     },
     "📖": {
-      "id": "5226512880362332956",
+      "id": "6037075352029765780",
       "emoji": "📖",
-      "pack": "RestrictedEmoji"
+      "pack": "GlassIcons"
     },
     "🔗": {
       "id": "5778351117733729026",
@@ -5364,7 +5364,7 @@
     },
     "🔙": {
       "id": "5985764515910784774",
-      "emoji": "⬅",
+      "emoji": "🔙",
       "pack": "TgPremiumIcon"
     },
     "🛠": {
@@ -5374,22 +5374,22 @@
     },
     "🆔": {
       "id": "5422683699130933153",
-      "emoji": "🪪",
-      "pack": "RestrictedEmoji"
+      "emoji": "🆔",
+      "pack": "TgPremiumIcon"
     },
     "🔤": {
       "id": "5395444784611480792",
-      "emoji": "✏",
+      "emoji": "🔤",
       "pack": "NewsEmoji"
     },
     "🔁": {
       "id": "5429166458343011591",
-      "emoji": "🔄",
+      "emoji": "🔁",
       "pack": "PremiumIcons"
     },
     "♻": {
       "id": "5429166458343011591",
-      "emoji": "🔄",
+      "emoji": "♻",
       "pack": "PremiumIcons"
     },
     "🔓": {
@@ -5409,13 +5409,13 @@
     },
     "📦": {
       "id": "5938540495792771769",
-      "emoji": "🎁",
+      "emoji": "📦",
       "pack": "TgPremiumIcon"
     },
     "📩": {
-      "id": "5406631276042002796",
-      "emoji": "📨",
-      "pack": "RestrictedEmoji"
+      "id": "5253742260054409879",
+      "emoji": "📩",
+      "pack": "NewsEmoji"
     },
     "🆘": {
       "id": "5274099962655816924",
@@ -5423,9 +5423,9 @@
       "pack": "NewsEmoji"
     },
     "💳": {
-      "id": "5431416651838932108",
-      "emoji": "💰",
-      "pack": "PremiumIcons"
+      "id": "5409048419211682843",
+      "emoji": "💳",
+      "pack": "NewsEmoji"
     },
     "🏧": {
       "id": "5300937164589124530",

@@ -3,6 +3,21 @@ They override the plain-looking RestrictedEmoji set; anything missing falls back
 Packs: TgPremiumIcon, PremiumIcons, NewsEmoji, IconsEmoji, EmojiStatus, StatusPack, StatusEmoji, GiftEmoji, NeonIcons, NeonEmoji, FlagsEmoji"""
 
 STYLE = {
+    "🔤": "5395444784611480792",  # NewsEmoji
+    "🆔": "5422683699130933153",  # TgPremiumIcon
+    "🔁": "5429166458343011591",  # PremiumIcons
+    "♻": "5429166458343011591",  # PremiumIcons
+    "🔙": "5985764515910784774",  # TgPremiumIcon
+    "📦": "5938540495792771769",  # TgPremiumIcon
+    "💳": "5409048419211682843",  # NewsEmoji
+    "📩": "5253742260054409879",  # NewsEmoji
+    "🎟": "5895293752829808957",  # TgPremiumIcon
+    "📚": "6037075352029765780",  # GlassIcons
+    "📖": "6037075352029765780",  # GlassIcons
+    "🛒": "5229064374403998351",  # NewsEmoji
+    "🚀": "5379634228310851732",  # CryptoIcons
+    "👥": "5904771654730391536",  # ShopIcons
+    "👤": "6039352582344808994",  # GlassIcons
     "⭐": "5897792062291449826",  # TgPremiumIcon
     "🎞": "5886346360994664363",  # TgPremiumIcon
     "⚡": "5888578476973232531",  # TgPremiumIcon

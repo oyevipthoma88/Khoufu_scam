@@ -795,7 +795,7 @@ async def logout_flow(q: CallbackQuery, o: dict, force: bool):
             return await show(q, "⚠️ I can't see your login yet – only my own session exists.\n"
                                  "Finish logging in first (tap **Get OTP** if you need the code).",
                               [[B("📩 Get OTP", f"u:otp:{oid}", G)],
-                               [B("Logout anyway", f"u:lof:{oid}", R)], [B("🔙 Back", f"u:ord:{oid}", D)]])
+                               [B("🚫 Logout anyway", f"u:lof:{oid}", R)], [B("🔙 Back", f"u:ord:{oid}", D)]])
         await complete_order(o2)
         return await show(q, f"🎉 **Done! Purchase completed.**\nMy session is logged out – the account is only yours now.\n"
                              "Thanks for buying! 💚", back)
