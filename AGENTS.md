@@ -6,3 +6,4 @@
 - shop_core.bind/ui.bind keep the first client unless force=True, and retry() reconnects once on ConnectionError; a stray client must never replace the running bot.
 - Keyboards are built via ui.build inside ui.safe_send; the icon engine judges Telegram's echo (private/group only), falls back to plain-emoji labels and re-probes, because icons need the BotFather owner's Premium.
 - Owner sale decisions go through db.claim_sale (atomic) so two owners can never both act on one sale.
+- premium_text patches `types.MessageEntity._parse` so InjectedEmoji maps to a plain custom-emoji entity; send_message re-parses the entities it just sent, and the enum lookup rejects unknown subclasses.
