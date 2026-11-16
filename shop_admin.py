@@ -1,5 +1,6 @@
 """Owner side: stock (accounts / channels / groups / bots / methods), prices, QR, codes, approvals."""
 import asyncio
+import logging
 import secrets
 import time
 
@@ -18,6 +19,8 @@ import userbot
 from shop_core import (KIND_ICON, KIND_NAME, SSTATE, STATUS_TXT, B, D, G, P, R, build, clean, clear_state,
                        friendly_err, lg, money, notify_owners, order_line, price_of, reply, send, show, who)
 import shop_core as core
+
+log = logging.getLogger("shop_admin")
 
 ADD_TAG: dict[int, str] = {}  # owner -> tag chosen for the accounts being added
 KINDS = ("account", "channel", "group", "bot", "method")
@@ -363,7 +366,10 @@ async def order_action(q: CallbackQuery, act: str, oid: int):
         if not o:
             return await q.answer("Already handled (or cancelled).", show_alert=True)
         lg(f"Order #{oid} APPROVED by {who(q.from_user)}", "✅")
-        await show(q, f"✅ Order #{oid} approved by {clean(q.from_user.first_name)} – delivering…", back)
+        try:
+            await show(q, f"✅ Order #{oid} approved by {clean(q.from_user.first_name)} – delivering…", back)
+        except Exception as e:  # approved = paid; the buyer must get the item even if this edit fails
+            log.warning("order #%s: status edit failed (%s) – delivering anyway", oid, e)
         return await shop_user.deliver(o)
     if act == "rj":
         o = await db.move_order(oid, ["awaiting_approval"], "rejected", {"rejected_by": uid})
@@ -475,8 +481,8 @@ async def admin_input(m: Message, st: dict):
 
     if step == "code_name":
         code = secrets.token_hex(4).upper() if text == "-" else text.upper().replace(" ", "")
-        if not (4 <= len(code) <= 30) or not code.isalnum():
-            return await m.reply("❌ 4–30 letters/numbers only." + CANCEL_TXT)
+        if not (4 <= len(code) <= 30) or not (code.isascii() and code.isalnum()):
+            return await m.reply("❌ 4–30 English letters (A–Z) / numbers only." + CANCEL_TXT)
         if await db.get_code(code):
             return await m.reply("❌ That code already exists. Send another." + CANCEL_TXT)
         await db.create_code(code, st["amount"], st["uses"], uid)
@@ -702,12 +708,10 @@ async def after_login(m: Message, purpose: str, docs: list[dict], pw: str | None
             if existing and existing.get("status") in ("available", "reserved"):
                 has_active = False
                 if existing.get("status") == "reserved":
-                    has_active = bool(await db.orders_col.find_one({
-                        "stock_id": existing["_id"],
-                        "status": {"$in": ["awaiting_payment", "awaiting_approval"]}
-                    }))
+                    has_active = bool(await db.orders_col.find_one({  # any live order – incl. delivered
+                        "stock_id": existing["_id"], "status": {"$in": db.ACTIVE_ORDER}}))
                 if has_active:
-                    dup.append(f"{d['phone']} (in checkout)")
+                    dup.append(f"{d['phone']} (in an active order)")
                     continue
                 await db.update_stock(existing["_id"], {
                     "status": "available", "session": d["session"], "phone": d["phone"],

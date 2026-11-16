@@ -1,5 +1,5 @@
 """MongoDB storage – everything survives bot restarts / Heroku dyno restarts."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -265,6 +265,13 @@ async def move_order(oid: int, frm: list[str] | str, to: str, extra: dict | None
         return_document=ReturnDocument.AFTER)
 
 
+async def claim_sale(oid: int, data: dict):
+    """Only ONE owner can approve/decline a sale. Returns the order before the claim, or None if already handled."""
+    return await orders_col.find_one_and_update(
+        {"_id": oid, "sale_handled": {"$ne": True}, "sale_ok": {"$ne": True}, "sale_flag": {"$ne": True}},
+        {"$set": {**data, "sale_handled": True, "updated": now()}})
+
+
 async def set_order(oid: int, data: dict):
     await orders_col.update_one({"_id": oid}, {"$set": {**data, "updated": now()}})
 
@@ -285,10 +292,22 @@ ACTIVE_ORDER = ["awaiting_payment", "awaiting_approval", "approved", "delivered"
                 "transferring", "logging_out", "manual"]
 
 
+RESERVE_GRACE = timedelta(minutes=10)
+
+
+def _aware(ts):
+    """Mongo may hand back naive UTC datetimes."""
+    return ts.replace(tzinfo=timezone.utc) if getattr(ts, "tzinfo", 1) is None else ts
+
+
 async def sweep_orphans() -> int:
-    """Stock stuck in 'reserved' without any live order goes back on sale (after a crash)."""
+    """Stock stuck in 'reserved' without any live order goes back on sale (after a crash).
+    Fresh reservations are skipped: a buyer may be between reserve_stock() and new_order() right now."""
     n = 0
     for it in await stock_find({"status": "reserved"}):
+        ra = it.get("reserved_at")
+        if ra is not None and _aware(ra) > now() - RESERVE_GRACE:
+            continue
         if not await orders_col.find_one({"stock_id": it["_id"], "status": {"$in": ACTIVE_ORDER}}):
             await release_stock(it["_id"])
             n += 1

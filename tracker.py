@@ -14,7 +14,7 @@ from pyrogram.handlers import CallbackQueryHandler, MessageHandler
 import config
 import database as db
 import shop_core as core
-from shop_core import B, G, P, clean, lg, money, who
+from shop_core import B, G, P, R, clean, lg, money, who
 
 BANNED: set[int] = set()
 _seen_today: dict[int, str] = {}
@@ -254,10 +254,9 @@ async def _broadcast(c, m, mode: str | None = None):
         text, mode = parts[1], "copy"
     if mode is None:
         _PENDING[m.from_user.id] = src
-        from pyrogram.types import InlineKeyboardButton as Btn, InlineKeyboardMarkup as Kb
-        await m.reply("📣 **How should I send this post?**", reply_markup=Kb([
-            [Btn("📤 Clean Copy", callback_data="bc:copy"), Btn("⏩ Forward", callback_data="bc:forward")],
-            [Btn("❌ Cancel", callback_data="bc:cancel")]]))
+        await core.reply(m, "📣 **How should I send this post?**", [  # same premium-icon pipeline as every menu
+            [B("📤 Clean Copy", "bc:copy", G), B("⏩ Forward", "bc:forward", P)],
+            [B("❌ Cancel", "bc:cancel", R)]])
         raise StopPropagation
     status = await m.reply("📣 Starting broadcast…")
     asyncio.create_task(_run_broadcast(c, status, m.from_user, src, mode, text))
@@ -282,6 +281,10 @@ async def _bc_cb(c, q):
     choice = q.data.split(":", 1)[1]
     src = _PENDING.pop(q.from_user.id, None)
     if choice == "cancel" or not src:
+        try:  # always answer, otherwise the button keeps spinning
+            await q.answer("Cancelled" if choice == "cancel" else "Expired")
+        except Exception:
+            pass
         await q.message.edit_text("❌ Broadcast cancelled" if choice == "cancel" else "⚠️ Expired, send /broadcast again")
         raise StopPropagation
     await q.answer("Starting…")

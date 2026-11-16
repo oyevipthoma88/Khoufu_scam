@@ -1,5 +1,6 @@
 """Buyer side: must-join check, menus, ordering, payment, delivery, OTP, logout, ownership."""
 import asyncio
+import logging
 import datetime as dt
 import time
 
@@ -17,6 +18,8 @@ from shop_core import (KIND_ICON, KIND_NAME, SSTATE, STATUS_TXT, B, D, G, P, R, 
                        friendly_err, is_owner, lg, lock, money, notify_owners, order_line, price_for_country,
                        price_of, reply, retry, send, show, who)
 import shop_core as core
+
+log = logging.getLogger("shop_user")
 
 TUTORIAL = """📖 **How to buy**
 
@@ -452,7 +455,10 @@ async def order_action(q: CallbackQuery, act: str, oid: int):
             await db.add_balance(uid, o["price"])
             return await show(q, "⌛ Order expired. Balance was not charged.", back)
         lg(f"Order #{oid} paid with balance by {who(q.from_user)}", "💰")
-        await show(q, "✅ Paid from balance. Delivering…", back)
+        try:
+            await show(q, "✅ Paid from balance. Delivering…", back)
+        except Exception as e:  # the money is taken – delivery must happen even if this edit fails
+            log.warning("order #%s: status edit failed (%s) – delivering anyway", oid, e)
         return await deliver(o2)
 
     if act == "otp":
@@ -503,7 +509,7 @@ async def user_input(m: Message, st: dict):
         lg(f"Payment proof for order #{oid} from {who(m.from_user)}", "🧾")
         await reply(m, f"✅ **Payment submitted** \nThe owner will verify it shortly – "
                        "you'll get a message here as soon as it's approved.", [[B("🏠 Menu", "u:home", D)]])
-        await _send_proof_to_owners(oid, o2, m.from_user, proof_file, proof_txt)
+        await _send_proof_to_owners(oid, o2, m.from_user, proof_file, o2.get("proof_text") or "")
         return
 
     if step == "redeem":
@@ -618,19 +624,19 @@ async def sale_confirmed(q: CallbackQuery, oid: int, ok: bool):
     o = await db.get_order(oid)
     if not o:
         return await q.answer("Order not found.", show_alert=True)
-    if o.get("sale_ok") or o.get("sale_flag") or o.get("sale_handled"):
-        who_name = o.get("sale_handled_by_name") or "an owner"
-        res_str = "APPROVED" if o.get("sale_ok") else "DECLINED"
+    name = clean(q.from_user.first_name) or f"Owner {uid}"
+    claim = ({"sale_ok": True, "sale_ok_by": uid, "sale_ok_at": db.now()} if ok else
+             {"sale_flag": True, "sale_flag_by": uid, "sale_flag_at": db.now(), "status": "declined"})
+    # Atomic: if two owners tap Approve and Decline together, exactly one of them wins.
+    if not await db.claim_sale(oid, {"sale_handled_by_name": name, **claim}):
+        done = await db.get_order(oid) or o
+        who_name = done.get("sale_handled_by_name") or "an owner"
+        res_str = "APPROVED" if done.get("sale_ok") else "DECLINED"
         return await q.answer(f"Already {res_str} by {who_name}!", show_alert=True)
 
     it = await db.get_stock(o.get("stock_id")) or {}
-    name = clean(q.from_user.first_name) or f"Owner {uid}"
     if not ok:
         lg(f"Order #{oid} sale DECLINED by {who(q.from_user)} – releasing stock", "🚫")
-        await db.set_order(oid, {
-            "sale_flag": True, "sale_flag_by": uid, "sale_handled_by_name": name,
-            "sale_flag_at": db.now(), "sale_handled": True, "status": "declined"
-        })
         if o.get("stock_id"):
             await db.release_stock(o["stock_id"])
         await q.answer("❌ Sale declined! Stock reclaimed.", show_alert=True)
@@ -647,10 +653,6 @@ async def sale_confirmed(q: CallbackQuery, oid: int, ok: bool):
                             [[B("🧾 Orders", f"so:ord:{oid}", P)]])
         return
 
-    await db.set_order(oid, {
-        "sale_ok": True, "sale_ok_by": uid, "sale_handled_by_name": name,
-        "sale_ok_at": db.now(), "sale_handled": True
-    })
     if o.get("stock_id"):
         await db.update_stock(o["stock_id"], {"status": "sold", "sold_to": o["user_id"], "sold_at": db.now()})
     lg(f"Order #{oid} sale APPROVED by {who(q.from_user)}", "✅")

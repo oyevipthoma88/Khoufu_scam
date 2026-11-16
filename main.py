@@ -338,9 +338,15 @@ async def handle_cb(q: CallbackQuery):
                              f"({'enabled' if UI['icons'] else 'disabled'})\n{icon_status_line()}", [
             [B("🖼 Set Start Pic", "op:pic", G), B("🗑 Remove Pic", "op:picdel", R)],
             [B("✨ Button Emojis", "op:emo", P), B("👑 Owners", "op:own", G, "addowner")],
-            [B(f"🎨 Icons: {'ON' if UI['icons'] else 'OFF'}", "op:icons", G if UI['icons'] else R)],
+            [B(f"🎨 Icons: {'ON' if UI['icons'] else 'OFF'}", "op:icons", G if UI['icons'] else R),
+             B("🧪 Icon Test", "op:itest", P)],
             BACK,
         ])
+    if d == "op:itest":
+        ui.force_icon_test()  # this very edit carries icons again -> Telegram's answer decides the state
+        rows = [[B("🧪 Test now", "op:itest", G)], back("owner")]
+        await edit(q, "🧪 **Testing premium icons…**", rows)
+        return await edit(q, await ui.icon_report(bot, config.OWNER_IDS), rows)
     if d == "op:own":
         extra = set(EXTRA_OWNERS)
         lines = ["👑 **Owners**\n"] + [f"• `{o}`" + ("" if o in extra else " (from settings, fixed)")
@@ -847,6 +853,35 @@ def _loop_errors(loop, ctx):
         pass
 
 
+def _icon_alert(old: str, new: str):
+    """Tell the owners once when premium button icons stop or start working."""
+    blocked = ("dropped", "rejected")
+    if old == "unknown":  # first result after start-up – the start-up report already covers it
+        return
+    if new in blocked and old not in blocked:
+        text = ("⚠️ **Premium button icons are OFF**\n" + ui.ICON_STATUS["reason"] +
+                "\n\nButtons show normal emojis meanwhile. The bot re-tests by itself.")
+    elif new == "active" and old in blocked:
+        text = "✅ **Premium button icons are LIVE again.**"
+    else:
+        return
+    logchan.push(text.replace("**", ""), "✨")
+
+    async def _go():
+        for oid in config.OWNER_IDS:
+            try:
+                await send(oid, text, [[B("🧪 Icon Test", "op:itest", P)]])
+            except Exception:
+                pass
+    try:
+        asyncio.get_running_loop().create_task(_go())
+    except RuntimeError:
+        pass
+
+
+ui.LISTENERS.append(_icon_alert)
+
+
 # ------------------------------------------------------------ run
 async def main():
     asyncio.get_running_loop().set_exception_handler(_loop_errors)
@@ -883,7 +918,7 @@ async def main():
     for oid in config.OWNER_IDS:
         try:
             await send(oid, "✅ **Bot is online.**", [[B("🏠 Open Menu", "home", P, "menu")]])
-            await send(oid, "🧪 **Premium icon check**\n\n" + icon_status_line())
+            await send(oid, await ui.icon_report(bot, config.OWNER_IDS), [[B("🧪 Test now", "op:itest", G)]])
         except Exception:
             pass
     await idle()

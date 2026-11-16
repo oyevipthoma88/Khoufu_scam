@@ -69,6 +69,15 @@ async def test_sale_confirmed_approval_and_decline(monkeypatch):
         if sid in stock_store:
             stock_store[sid]["status"] = "available"
 
+    async def mock_claim_sale(oid, fields):
+        o = order_store.get(oid)
+        if not o or o.get("sale_handled"):
+            return None
+        before = dict(o)
+        o.update(fields, sale_handled=True)
+        return before
+
+    monkeypatch.setattr(db, "claim_sale", mock_claim_sale)
     monkeypatch.setattr(db, "get_order", mock_get_order)
     monkeypatch.setattr(db, "set_order", mock_set_order)
     monkeypatch.setattr(db, "get_stock", mock_get_stock)

@@ -37,6 +37,9 @@ Owner-only Telegram bot (multiple owners supported).
 ## Owner Panel
 - **🖼 Start Pic** – photo shown on /start, saved in MongoDB (survives restarts).
 - **✨ Button Emojis** – tap a button name, send any premium emoji: it becomes the button icon (saved in MongoDB). If Telegram rejects icons, the bot falls back to plain buttons automatically.
+- **🧪 Icon Test** – shows whether premium button icons are LIVE or BLOCKED, the exact Telegram reason, and which owners have Premium.
+  Telegram only shows button icons if the account that **created the bot in @BotFather** has Telegram Premium (never in channels).
+  While blocked, buttons keep their normal emojis and the bot re-tests every `ICON_PROBE_EVERY` seconds (default 1800) – icons come back by themselves.
 - Buttons are coloured: green = apply/add, red = reset/remove, blue = navigation.
 
 
