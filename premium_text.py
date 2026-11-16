@@ -14,7 +14,7 @@ Safe:
 import logging
 import os
 import regex
-from pyrogram import utils
+from pyrogram import utils, types
 from emoji_registry import emoji_id
 
 from pyrogram import Client, raw
@@ -67,6 +67,7 @@ def _is_bot(client) -> bool:
 _orig_parse = Parser.parse
 _orig_invoke = Client.invoke
 _orig_entities = utils.parse_text_entities
+_orig_entity_parse = types.MessageEntity._parse
 
 
 async def _parse(self, text, mode=None):
@@ -88,6 +89,16 @@ async def _entities(client, text, parse_mode, entities):
         existing = list(result.get("entities") or [])
         result["entities"] = sorted(existing + emoji_entities(result["message"], existing), key=lambda e: e.offset) or None
     return result
+
+
+async def _entity_parse(client, entity, users):
+    # send_message()/edit via UpdateShortSentMessage parses the entities we SENT back into
+    # pyrogram types; enums.MessageEntityType(InjectedEmoji) raises "is not a valid
+    # MessageEntityType". Present our subclass as the plain custom-emoji entity it is on the wire.
+    if isinstance(entity, InjectedEmoji):
+        entity = raw.types.MessageEntityCustomEmoji(
+            offset=entity.offset, length=entity.length, document_id=entity.document_id)
+    return await _orig_entity_parse(client, entity, users)
 
 
 def _strip(query) -> bool:
@@ -124,4 +135,5 @@ def install():
     if Parser.parse is not _parse:
         Parser.parse = _parse
         utils.parse_text_entities = _entities
+        types.MessageEntity._parse = staticmethod(_entity_parse)
         Client.invoke = _invoke
