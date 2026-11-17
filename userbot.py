@@ -28,7 +28,8 @@ import logchan
 log = logging.getLogger(__name__)
 
 from pyrogram.errors import (AuthKeyUnregistered, AuthKeyDuplicated, UserDeactivated,
-                             UserDeactivatedBan, SessionRevoked)
+                             UserDeactivatedBan, SessionRevoked, ChannelInvalid, ChannelPrivate,
+                             ChatIdInvalid, PeerIdInvalid)
 
 # One lock per account: the same account is never worked on by two jobs at once,
 # but different accounts run in parallel (limited by config.PARALLEL_ACCOUNTS).
@@ -59,20 +60,37 @@ def new_client(session: str | None = None, name: str = "acc") -> Client:
     )
 
 
+async def _close(c: Client | None):
+    if c is None:
+        return
+    try:
+        if c.is_connected:
+            await c.stop()
+        else:
+            await c.disconnect()
+    except Exception:
+        pass
+
+
+async def _start(c: Client):
+    try:
+        await asyncio.shield(c.start())
+    except Exception:
+        await _close(c)
+        raise
+
+
 @asynccontextmanager
 async def account_client(session: str):
     c = new_client(session)
     try:
-        await c.start()
+        await _start(c)
     except (AuthKeyUnregistered, AuthKeyDuplicated, UserDeactivated, UserDeactivatedBan, SessionRevoked) as e:
         raise RuntimeError(f"Session dead ({e.__class__.__name__}) – remove this account and log in again") from e
     try:
         yield c
     finally:
-        try:
-            await c.stop()
-        except Exception:
-            pass
+        await asyncio.shield(_close(c))
 
 
 class FloodTooLong(Exception):
@@ -330,14 +348,24 @@ async def apply_chats(c: Client, acc: dict, kind: str, s: dict, report) -> list[
         await report(f"{label}s: no settings, skipped")
         return chats
 
-    # drop chats that were deleted
+    # warm peer cache so get_chat knows existing dialogs
+    try:
+        async for _ in c.get_dialogs(limit=100):
+            pass
+    except Exception:
+        pass
+
+    # drop chats that were deleted (only on definitive "gone" errors)
+    _GONE = (ChannelInvalid, ChannelPrivate, ChatIdInvalid, PeerIdInvalid)
     alive = []
     for ch in chats:
         try:
             await c.get_chat(ch["id"])
             alive.append(ch)
-        except Exception:
+        except _GONE:
             pass
+        except Exception:
+            alive.append(ch)  # keep on transient errors (flood, network)
     chats = alive
     public_ok = [True]
 

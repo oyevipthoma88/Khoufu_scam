@@ -216,20 +216,24 @@ async def reserve_stock(query: dict, user_id: int):
         sort=[("added", 1)], return_document=ReturnDocument.AFTER)
 
 
-async def release_stock(sid):
-    await stock_col.update_one({"_id": sid, "status": "reserved"},
-                               {"$set": {"status": "available"}, "$unset": {"reserved_by": "", "reserved_at": ""}})
+async def release_stock(sid) -> bool:
+    """reserved -> available. Returns False when the item was not reserved (e.g. already sold)."""
+    r = await stock_col.update_one({"_id": sid, "status": "reserved"},
+                                   {"$set": {"status": "available"}, "$unset": {"reserved_by": "", "reserved_at": ""}})
+    return r.modified_count == 1
 
 
 async def get_stock(sid):
     return await stock_col.find_one({"_id": sid})
 
 
-async def update_stock(sid, data: dict, unset: dict | None = None):
+async def update_stock(sid, data: dict, unset: dict | None = None, where: dict | None = None) -> bool:
+    """`where` adds conditions (e.g. {"status": "available"}) so the update is atomic with the check."""
     upd = {"$set": data}
     if unset:
         upd["$unset"] = unset
-    await stock_col.update_one({"_id": sid}, upd)
+    r = await stock_col.update_one({**(where or {}), "_id": sid}, upd)
+    return r.matched_count == 1
 
 
 async def delete_stock(sid) -> bool:
@@ -267,9 +271,24 @@ async def move_order(oid: int, frm: list[str] | str, to: str, extra: dict | None
 
 async def claim_sale(oid: int, data: dict):
     """Only ONE owner can approve/decline a sale. Returns the order before the claim, or None if already handled."""
+    q = {"_id": oid, "sale_handled": {"$ne": True}, "sale_ok": {"$ne": True}, "sale_flag": {"$ne": True}}
+    if "status" in data:  # a decline must never overwrite a finished order
+        q["status"] = {"$nin": list(FINAL_ORDER)}
+    return await orders_col.find_one_and_update(q, {"$set": {**data, "sale_handled": True, "updated": now()}})
+
+
+async def expire_order(oid: int, status: str, before):
+    """awaiting_payment -> status, only if the deadline is STILL past (the buyer may have just extended it)."""
     return await orders_col.find_one_and_update(
-        {"_id": oid, "sale_handled": {"$ne": True}, "sale_ok": {"$ne": True}, "sale_flag": {"$ne": True}},
-        {"$set": {**data, "sale_handled": True, "updated": now()}})
+        {"_id": oid, "status": "awaiting_payment", "expires": {"$lt": before}},
+        {"$set": {"status": status, "updated": now()}}, return_document=ReturnDocument.AFTER)
+
+
+async def extend_payment(oid: int, until) -> bool:
+    """Give the buyer more time, but only while the order is still unpaid."""
+    r = await orders_col.update_one({"_id": oid, "status": "awaiting_payment"},
+                                    {"$set": {"expires": until, "updated": now()}})
+    return r.matched_count == 1
 
 
 async def set_order(oid: int, data: dict):
@@ -288,6 +307,7 @@ async def stale_unpaid(before) -> list[dict]:
     return [x async for x in orders_col.find({"status": "awaiting_payment", "expires": {"$lt": before}})]
 
 
+FINAL_ORDER = ("completed", "cancelled", "expired", "rejected", "declined")
 ACTIVE_ORDER = ["awaiting_payment", "awaiting_approval", "approved", "delivered",
                 "transferring", "logging_out", "manual"]
 

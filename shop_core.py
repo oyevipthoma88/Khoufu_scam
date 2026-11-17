@@ -264,5 +264,27 @@ async def clear_state(uid: int):
             pass
 
 
+async def set_state(uid: int, st: dict):
+    """Start a new conversation step. The old one is cleared FIRST so a half-finished phone
+    login (connected client) is disconnected instead of leaking when a menu button is tapped."""
+    await clear_state(uid)
+    SSTATE[uid] = st
+
+
+def parse_amount(text: str, allow_zero: bool = True) -> float:
+    """'1,299.5' -> 1299.5. Rejects nan / inf / negatives (they crash money() and checkout)."""
+    import math
+    v = float((text or "").replace(",", "").strip())
+    if not math.isfinite(v) or v < 0 or (v == 0 and not allow_zero) or v > 10**9:
+        raise ValueError("invalid amount")
+    return v
+
+
+def cap(lines: list[str], n: int = 25) -> list[str]:
+    """Keep result lists short enough for one Telegram message (4096 chars)."""
+    lines = [str(x)[:120] for x in lines]
+    return lines if len(lines) <= n else lines[:n] + [f"… and {len(lines) - n} more"]
+
+
 def home_btn(owner: bool = False):
     return [B("🏠 Menu", "so:home" if owner else "u:home", P)]

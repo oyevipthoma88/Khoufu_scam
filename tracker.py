@@ -10,6 +10,7 @@ import time
 from pyrogram import StopPropagation, filters
 from pyrogram.errors import FloodWait, InputUserDeactivated, UserIsBlocked
 from pyrogram.handlers import CallbackQueryHandler, MessageHandler
+from pyrogram.types import InlineKeyboardMarkup
 
 import config
 import database as db
@@ -177,7 +178,8 @@ async def _send_one(c, src, uid: int, mode: str, text: str | None):
         return await c.send_message(uid, text)
     if mode == "forward":
         return await c.forward_messages(uid, src.chat.id, src.id)
-    return await src.copy(uid, reply_markup=src.reply_markup)
+    reply_markup = src.reply_markup if isinstance(src.reply_markup, InlineKeyboardMarkup) else None
+    return await src.copy(uid, reply_markup=reply_markup)
 
 
 def _bar(done: int, total: int) -> str:

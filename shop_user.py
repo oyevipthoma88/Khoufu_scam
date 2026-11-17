@@ -233,7 +233,7 @@ async def user_cb(q: CallbackQuery):
     if act == "ord":
         return await order_view(q, int(parts[2]))
     if act == "redeem":
-        SSTATE[uid] = {"step": "redeem"}
+        await core.set_state(uid, {"step": "redeem"})
         return await show(q, "🎟 Send your **redeem code**.\n\n/cancel to stop", [[B("🔙 Back", "u:home", D, "back")]])
     if act in ("paid", "bal", "cx", "otp", "done", "lo", "lof", "joined", "other", "chk"):
         return await order_action(q, act, int(parts[2]))
@@ -241,6 +241,7 @@ async def user_cb(q: CallbackQuery):
 
 # ---------------------------------------------------------------- browsing
 PAGE = 8
+MAX_COUNTRIES = 20  # countries per account-stock screen
 
 
 async def buy_list(q: CallbackQuery, parts: list[str]):
@@ -263,7 +264,9 @@ async def buy_list(q: CallbackQuery, parts: list[str]):
         if not rows_c:
             return await show(q, f"😔 **{core.TAGS[tag]} accounts are out of stock** right now.\nCheck again later or tap 📢 Update Channel.", [back])
         lines, rows = [f"📱 **{core.TAGS[tag]} account stock**\n"], []
-        for c in rows_c:
+        if len(rows_c) > MAX_COUNTRIES:  # keep text < 4096 chars and the keyboard small
+            lines.append(f"_(showing top {MAX_COUNTRIES} of {len(rows_c)} countries)_\n")
+        for c in rows_c[:MAX_COUNTRIES]:
             cc = c["_id"]
             p = price_for_country(shop, cc, tag)
             label = f"{shop_tg.flag(cc)} {c.get('name') or cc}"
@@ -439,8 +442,10 @@ async def order_action(q: CallbackQuery, act: str, oid: int):
     if act == "paid":
         if o["status"] != "awaiting_payment":
             return await show(q, f"This order is: {STATUS_TXT.get(o['status'], o['status'])}", back)
-        await db.set_order(oid, {"expires": db.now() + dt.timedelta(minutes=30)})
-        SSTATE[uid] = {"step": "proof", "oid": oid}
+        if not await db.extend_payment(oid, db.now() + dt.timedelta(minutes=30)):
+            o = await db.get_order(oid) or o
+            return await show(q, f"This order is: {STATUS_TXT.get(o['status'], o['status'])}", back)
+        await core.set_state(uid, {"step": "proof", "oid": oid})
         return await show(q, f"📸 Send the **payment screenshot** (photo) or the **UTR / transaction ID** as text.\n"
                              f"Amount: **{money(o['price'])}**\n\n/cancel to stop",
                           [[B("❌ Cancel order", f"u:cx:{oid}", R)]])
@@ -479,7 +484,7 @@ async def order_action(q: CallbackQuery, act: str, oid: int):
     if act == "other":
         if o["status"] != "delivered":
             return await show(q, "Nothing to do for this order.", back)
-        SSTATE[uid] = {"step": "target", "oid": oid}
+        await core.set_state(uid, {"step": "target", "oid": oid})
         return await show(q, "🆔 **Transfer to another account**\n\n1. Join the channel/group with that account\n"
                              "2. Send me its **numeric Telegram ID** here (e.g. from @userinfobot)\n\n/cancel to stop",
                           [[B("🔙 Back", f"u:ord:{oid}", D)]])
@@ -596,7 +601,7 @@ async def route_pending_proof(m: Message) -> bool:
     lg(f"Payment proof (recovered) for order #{o['_id']} from {who(m.from_user)}", "🧾")
     await reply(m, f"✅ **Payment received for order #{o['_id']}** – the owner will verify it shortly.",
                 [[B("🏠 Menu", "u:home", D)]])
-    await _send_proof_to_owners(o["_id"], o2, m.from_user, proof_file, proof_txt)
+    await _send_proof_to_owners(o["_id"], o2, m.from_user, proof_file, o2.get("proof_text") or "")
     return True
 
 
@@ -625,6 +630,8 @@ async def sale_confirmed(q: CallbackQuery, oid: int, ok: bool):
     if not o:
         return await q.answer("Order not found.", show_alert=True)
     name = clean(q.from_user.first_name) or f"Owner {uid}"
+    if not ok and o.get("status") in db.FINAL_ORDER and not o.get("sale_handled"):
+        return await q.answer(f"Order is already {o['status']} – it can't be declined any more.", show_alert=True)
     claim = ({"sale_ok": True, "sale_ok_by": uid, "sale_ok_at": db.now()} if ok else
              {"sale_flag": True, "sale_flag_by": uid, "sale_flag_at": db.now(), "status": "declined"})
     # Atomic: if two owners tap Approve and Decline together, exactly one of them wins.
@@ -636,12 +643,15 @@ async def sale_confirmed(q: CallbackQuery, oid: int, ok: bool):
 
     it = await db.get_stock(o.get("stock_id")) or {}
     if not ok:
-        lg(f"Order #{oid} sale DECLINED by {who(q.from_user)} – releasing stock", "🚫")
-        if o.get("stock_id"):
-            await db.release_stock(o["stock_id"])
-        await q.answer("❌ Sale declined! Stock reclaimed.", show_alert=True)
+        released = bool(o.get("stock_id")) and await db.release_stock(o["stock_id"])
+        lg(f"Order #{oid} sale DECLINED by {who(q.from_user)} – "
+           + ("stock released" if released else f"stock NOT released (status {it.get('status') or '?'})"), "🚫")
+        await q.answer("❌ Sale declined! " + ("Stock reclaimed." if released else "Item was not in reserve – check it."),
+                       show_alert=True)
+        stock_txt = ("Stock has been safely returned to available inventory." if released else
+                     f"⚠️ Item was NOT returned to stock (it is **{it.get('status') or 'missing'}**) – check it manually.")
         txt = (_sale_card(o, it, f"🚫 **SALE DECLINED – order #{oid}**") +
-               f"\n\n❌ **Declined by {name}**\nStock has been safely returned to available inventory.")
+               f"\n\n❌ **Declined by {name}**\n{stock_txt}")
         await show(q, txt, [])
         try:
             await send(o["user_id"], f"❌ **Notice for order #{oid}:**\nThe sale was declined by the seller. "
@@ -649,7 +659,8 @@ async def sale_confirmed(q: CallbackQuery, oid: int, ok: bool):
                        [[B("🏠 Menu", "u:home", D)]])
         except Exception:
             pass
-        await notify_owners(f"🚩 **Sale #{oid} was DECLINED** by {who(q.from_user)}\n{order_line(o)}\nItem returned to stock.",
+        await notify_owners(f"🚩 **Sale #{oid} was DECLINED** by {who(q.from_user)}\n{order_line(o)}\n"
+                            + ("Item returned to stock." if released else "⚠️ Item was NOT returned to stock."),
                             [[B("🧾 Orders", f"so:ord:{oid}", P)]])
         return
 
@@ -704,9 +715,12 @@ def _sale_card(o: dict, it: dict, head: str) -> str:
     return "\n".join(lines)
 
 
-async def complete_order(o: dict, extra: dict | None = None):
-    await db.move_order(o["_id"], ["approved", "delivered", "transferring", "logging_out", "manual"],
-                        "completed", extra)
+async def complete_order(o: dict, extra: dict | None = None) -> bool:
+    done = await db.move_order(o["_id"], ["approved", "delivered", "transferring", "logging_out", "manual"],
+                               "completed", extra)
+    if not done:  # e.g. declined / cancelled meanwhile – never mark that stock sold or drop its session
+        lg(f"Order #{o['_id']} could not be completed (status changed meanwhile)", "⚠️")
+        return False
     await db.update_stock(o["stock_id"], {"status": "sold", "sold_to": o["user_id"], "sold_at": db.now()},
                           unset={"session": ""} if o["kind"] == "account" else None)
     lg(f"Order #{o['_id']} COMPLETED – {order_line(o)} | buyer {o['user_id']} @{o.get('username') or '-'}", "🏁")
@@ -815,7 +829,10 @@ async def logout_flow(q: CallbackQuery, o: dict, force: bool):
         if not o2:
             return await show(q, "Nothing to do for this order.", back)
         it = await db.get_stock(o["stock_id"]) or {}
-        await show(q, "⏳ Checking your login and logging out my session…", [])
+        try:  # a failed progress edit must never strand the order in logging_out
+            await show(q, "⏳ Checking your login and logging out my session…", [])
+        except Exception as e:
+            core.log.warning("logout progress update failed: %s", e)
         try:
             done, why = await shop_tg.logout_stock(it["session"], force) if it.get("session") else (True, "already")
         except Exception as e:
@@ -829,7 +846,8 @@ async def logout_flow(q: CallbackQuery, o: dict, force: bool):
                                  "Finish logging in first (tap **Get OTP** if you need the code).",
                               [[B("📩 Get OTP", f"u:otp:{oid}", G)],
                                [B("🚫 Logout anyway", f"u:lof:{oid}", R)], [B("🔙 Back", f"u:ord:{oid}", D)]])
-        await complete_order(o2)
+        if not await complete_order(o2):
+            return await show(q, "⚠️ This order changed meanwhile – please contact the owner.", back)
         return await show(q, f"🎉 **Done! Purchase completed.**\nMy session is logged out – the account is only yours now.\n"
                              "Thanks for buying! 💚", back)
 
@@ -902,8 +920,10 @@ async def reaper():
             n = await db.sweep_orphans()
             if n:
                 lg(f"Released {n} stuck reserved item(s) back to stock", "♻️")
-            for o in await db.stale_unpaid(db.now()):
-                if await cancel_order(o, "expired"):
+            cutoff = db.now()
+            for o in await db.stale_unpaid(cutoff):
+                if await db.expire_order(o["_id"], "expired", cutoff):  # re-checks the deadline atomically
+                    await db.release_stock(o["stock_id"])
                     lg(f"Order #{o['_id']} expired – item back in stock", "⌛")
                     try:
                         await send(o["user_id"], f"⌛ Your order expired because it wasn't paid in time. "

@@ -7,3 +7,6 @@
 - Keyboards are built via ui.build inside ui.safe_send; the icon engine judges Telegram's echo (private/group only), falls back to plain-emoji labels and re-probes, because icons need the BotFather owner's Premium.
 - Owner sale decisions go through db.claim_sale (atomic) so two owners can never both act on one sale.
 - premium_text patches `types.MessageEntity._parse` so InjectedEmoji maps to a plain custom-emoji entity; send_message re-parses the entities it just sent, and the enum lookup rejects unknown subclasses.
+- Conversation state transitions use shop_core.set_state to disconnect and close any half-started phone login client before setting new state.
+- Order and stock transitions are atomic and conditional: expire_order checks deadline still past; update_stock accepts where conditions; claim_sale checks status not in FINAL_ORDER.
+- ui.safe_send falls back to plain button styles permanently if Telegram rejects button styles (BUTTON_STYLE / STYLE_INVALID).

@@ -17,7 +17,7 @@ import regex
 from pyrogram import utils, types
 from emoji_registry import emoji_id
 
-from pyrogram import Client, raw
+from pyrogram import Client, enums, raw
 from pyrogram.errors import BadRequest
 from pyrogram.parser.parser import Parser
 
@@ -30,6 +30,25 @@ MAX_PER_MSG = 100
 class InjectedEmoji(raw.types.MessageEntityCustomEmoji):
     """Distinct type retains the Telegram constructor while marking only our entities."""
     pass
+
+
+def _entity_type_missing(cls, value):
+    """Resolve raw entity SUBCLASSES (e.g. InjectedEmoji) to their parent's enum member.
+
+    pyrogram maps raw entities with ``MessageEntityType(entity.__class__)``; enum lookup is
+    by exact class, so a subclass raised "<class InjectedEmoji> is not a valid
+    MessageEntityType" wherever pyrogram turns sent entities back into Message objects
+    (send_message -> UpdateShortSentMessage, i.e. most private-chat replies and /start).
+    """
+    if isinstance(value, type):
+        for member in cls:
+            base = member.value
+            if isinstance(base, type) and issubclass(value, base):
+                return member
+    return None
+
+
+enums.MessageEntityType._missing_ = classmethod(_entity_type_missing)
 
 
 _SKIP = (raw.types.MessageEntityCode, raw.types.MessageEntityPre, raw.types.MessageEntityCustomEmoji,
@@ -114,7 +133,12 @@ def _strip(query) -> bool:
         ents = getattr(obj, "entities", None)
         if ents:
             keep = [e for e in ents if not isinstance(e, InjectedEmoji)]
-            if len(keep) != len(ents): obj.entities, changed = keep or None, True
+            if len(keep) != len(ents):
+                # Mutate in place too: send_message keeps its own reference to this list and
+                # builds the returned Message from it, which must match what Telegram applied.
+                if isinstance(ents, list):
+                    ents[:] = keep
+                obj.entities, changed = keep or None, True
         for attr in ("media", "multi_media"): walk(getattr(obj, attr, None))
     walk(query)
     return changed

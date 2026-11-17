@@ -33,6 +33,7 @@ def U(text: str, url: str) -> InlineKeyboardButton:
 # ------------------------------------------------------------ buttons (colour + premium emoji)
 # Each button spec: (text, callback_data, style, emoji_key)
 G, R, P, D = ButtonStyle.SUCCESS, ButtonStyle.DANGER, ButtonStyle.PRIMARY, ButtonStyle.DEFAULT
+STYLES = {"on": True}
 EMOJI_KEYS = {
     "add": "➕ Add Account", "accs": "👤 My Accounts", "custom": "⚙️ Custom", "tut": "📖 Tutorial",
     "apply": "🚀 Apply", "auto": "🤖 Auto", "links": "🔗 Links", "status": "📊 Status",
@@ -59,8 +60,15 @@ def _auto_icon(text: str):
     return leading_emoji(text)[1]
 
 
+def _style_error(e) -> bool:
+    s = (str(e or "") + " " + str(getattr(e, "ID", "") or "")).upper()
+    return any(x in s for x in ("BUTTON_STYLE", "STYLE_INVALID"))
+
+
 def _decorate(button, icons, override=None):
     button = copy(button)
+    if not STYLES["on"]:
+        button.style = D
     cluster, automatic = leading_emoji(button.text)
     eid = (verified_id(override) or verified_id(button.icon_custom_emoji_id) or automatic
            or PREMIUM["▫"]) if icons else None
@@ -85,7 +93,9 @@ def _build(rows, icons: bool) -> M:
                 r.append(_decorate(b, icons))
                 continue
             text, data, style, key = b
-            if style == D:  # no plain grey buttons – every button gets a colour
+            if not STYLES["on"]:
+                style = D
+            elif style == D:  # no plain grey buttons – every button gets a colour
                 style = R if data and any(x in data for x in (":cx:", ":del", ":rj:", "clear", "picdel", "owrm")) else P
             r.append(_decorate(InlineKeyboardButton(text, style=style, callback_data=data),
                                icons, UI["emojis"].get(key)))
@@ -197,6 +207,13 @@ async def safe_send(coro_factory):
     except MessageNotModified:
         return None
     except (RPCError, ValueError) as e:
+        if _style_error(e) and STYLES["on"]:
+            STYLES["on"] = False
+            log.warning("Telegram rejected button styles (%s); falling back to plain buttons permanently", e)
+            try:
+                return await coro_factory(False)
+            except Exception:
+                pass
         sent = _LAST.get()[0]
         if isinstance(e, FloodWait) or not sent or not _icon_error(e):
             raise

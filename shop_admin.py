@@ -8,7 +8,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from pyrogram.errors import (FloodWait, PasswordHashInvalid, PhoneCodeExpired, PhoneCodeInvalid,
                              PhoneNumberInvalid, SessionPasswordNeeded)
-from pyrogram.types import CallbackQuery, Message
+from pyrogram.types import CallbackQuery, Message, User
 
 import config
 import database as db
@@ -96,26 +96,26 @@ async def admin_cb(q: CallbackQuery):
             return await show(q, f"{KIND_ICON[kind]} **Add {KIND_NAME[kind]}**\n\nChoose the account that **owns** the "
                                  f"{kind}s you want to sell, or log in a new one.", rows)
         if kind == "bot":
-            SSTATE[uid] = {"step": "bot_token"}
+            await core.set_state(uid, {"step": "bot_token"})
             return await show(q, "🤖 Send the **bot token** (from @BotFather). I verify it automatically." + CANCEL_TXT,
                               [[B("🔙 Back", "so:add", D, "back")]])
         if kind == "method":
-            SSTATE[uid] = {"step": "m_title"}
+            await core.set_state(uid, {"step": "m_title"})
             return await show(q, "📚 Send the **title** of the method." + CANCEL_TXT, [[B("🔙 Back", "so:add", D, "back")]])
     if act == "addt":
         tag = p[2] if p[2] in core.TAGS else "normal"
         ADD_TAG[uid] = tag
-        SSTATE[uid] = {"step": "lm", "purpose": "account"}
+        await core.set_state(uid, {"step": "lm", "purpose": "account"})
         return await show(q, f"📱 **Add {core.TAGS[tag]} account(s)** – how do you want to log in?",
                           _lm_rows("so:addk:account"))
     if act == "seln":
-        SSTATE[uid] = {"step": "lm", "purpose": p[2]}
+        await core.set_state(uid, {"step": "lm", "purpose": p[2]})
         return await show(q, "👤 **New owner account** – how do you want to log in?\n\n"
                              "ℹ️ Telegram only allows ownership transfer ~24h after a session is created and needs the "
                              "account's **2-step password**.", _lm_rows(f"so:addk:{p[2]}"))
     if act == "sel":
         kind, sid = p[2], int(p[3])
-        SSTATE[uid] = {"step": "urls", "kind": kind, "seller": sid}
+        await core.set_state(uid, {"step": "urls", "kind": kind, "seller": sid})
         return await show(q, f"🔗 Send the **{kind} URLs** this account owns – one or many (one per line).\n"
                              "Example: `https://t.me/mychannel` or private invite links." + CANCEL_TXT,
                           [[B("🔙 Back", f"so:addk:{kind}", D, "back")]])
@@ -202,7 +202,7 @@ async def admin_cb(q: CallbackQuery):
                           rows + [[B("🔙 Back", "so:pk:account", D, "back")]])
     if act == "pc":
         kind, cc = p[2], p[3]
-        SSTATE[uid] = {"step": "price", "kind": kind, "cc": cc}
+        await core.set_state(uid, {"step": "price", "kind": kind, "cc": cc})
         if kind == "account":
             t, c = core.split_ref(cc)
             label = f"{KIND_NAME[kind]} {core.TAGS[t]} – " + ("all countries" if c == "_" else f"{shop_tg.flag(c)} {c}")
@@ -213,14 +213,14 @@ async def admin_cb(q: CallbackQuery):
 
     # ---------- QR / UPI / texts
     if act == "qr":
-        SSTATE[uid] = {"step": "qr"}
+        await core.set_state(uid, {"step": "qr"})
         return await show(q, "🖼 Send the **payment QR** as a photo." + CANCEL_TXT, [BACK_HOME])
     if act == "upi":
-        SSTATE[uid] = {"step": "upi"}
+        await core.set_state(uid, {"step": "upi"})
         return await show(q, "🏦 Send your **UPI ID** (or `-` to remove)." + CANCEL_TXT, [BACK_HOME])
     if act == "set":
         field = p[2]
-        SSTATE[uid] = {"step": "set", "field": field}
+        await core.set_state(uid, {"step": "set", "field": field})
         hint = {"update_link": "Send the **update channel** link / @username (or `-` to remove).",
                 "contact": "Send the **owner contact**: @username or numeric ID (or `-` to remove).",
                 "tutorial": "Send the full **tutorial text** shown to users (or `-` for the default)."}[field]
@@ -238,7 +238,7 @@ async def admin_cb(q: CallbackQuery):
             lines.append("No codes yet.")
         return await show(q, "\n".join(lines), [[B("➕ Create code", "so:cc", G)]] + rows[:12] + [BACK_HOME])
     if act == "cc":
-        SSTATE[uid] = {"step": "code_amount"}
+        await core.set_state(uid, {"step": "code_amount"})
         return await show(q, "🎟 Send the **amount** this code gives (e.g. `100`)." + CANCEL_TXT, [[B("🔙 Back", "so:codes", D)]])
     if act == "cd":
         await db.delete_code(p[2])
@@ -260,7 +260,7 @@ async def admin_cb(q: CallbackQuery):
             lines.append("None set – everyone can use the bot.")
         return await show(q, "\n".join(lines), [[B("➕ Add channel", "so:fa", G)]] + rows + [BACK_HOME])
     if act == "fa":
-        SSTATE[uid] = {"step": "force_add"}
+        await core.set_state(uid, {"step": "force_add"})
         return await show(q, "🔒 Send the channel **@username**, link or `-100…` ID. The bot must be admin there." + CANCEL_TXT,
                           [[B("🔙 Back", "so:force", D)]])
     if act == "fd":
@@ -413,14 +413,12 @@ async def order_action(q: CallbackQuery, act: str, oid: int):
 async def admin_input(m: Message, st: dict):
     uid = m.from_user.id
     step = st["step"]
-    text = (m.text or "").strip()
+    text = (m.text or "") if step in ("l2fa", "lpw") else (m.text or "").strip()
 
     # ---------- plain settings
     if step == "price":
         try:
-            val = float(text.replace(",", ""))
-            if val < 0:
-                raise ValueError
+            val = core.parse_amount(text, allow_zero=True)
         except ValueError:
             return await m.reply("❌ Send a number like `99` (or `0` to remove)." + CANCEL_TXT)
         shop = await db.get_shop()
@@ -465,9 +463,7 @@ async def admin_input(m: Message, st: dict):
 
     if step == "code_amount":
         try:
-            amt = float(text.replace(",", ""))
-            if amt <= 0:
-                raise ValueError
+            amt = core.parse_amount(text, allow_zero=False)
         except ValueError:
             return await m.reply("❌ Send a positive number." + CANCEL_TXT)
         st.update(step="code_uses", amount=amt)
@@ -561,13 +557,13 @@ async def admin_input(m: Message, st: dict):
 
     # ---------- login flows
     if step == "l2fa":
-        if not text:
+        if not text.strip():
             return await m.reply("Send the password as text (or `-`)." + CANCEL_TXT)
         try:
             await m.delete()
         except Exception:
             pass
-        st.update(step="lstring", pw=None if text == "-" else text)
+        st.update(step="lstring", pw=None if text.strip() == "-" else text)
         return await m.reply("🔑 Now send the **string session**" + (" (one or many, one per line)." if st["purpose"] == "account" else ".") + CANCEL_TXT)
 
     if step == "lstring":
@@ -607,17 +603,22 @@ async def admin_input(m: Message, st: dict):
         if len(phone.lstrip("+")) < 7:
             return await m.reply("❌ That doesn't look like a phone number. Example: `+919876543210`")
         c = userbot.new_client(None, "shoplogin")
+        st["client"] = c
         try:
             await c.connect()
             sent = await c.send_code(phone)
         except PhoneNumberInvalid:
             await _disc(c)
+            st.pop("client", None)
             return await m.reply("❌ Invalid phone number. Try again or /cancel.")
         except Exception as e:
             await _disc(c)
             SSTATE.pop(uid, None)
             return await reply(m, f"❌ {friendly_err(e)}", [BACK_HOME])
-        st.update(step="lcode", client=c, phone=phone, hash=sent.phone_code_hash, t=time.time())
+        if SSTATE.get(uid) is not st:
+            await _disc(c)
+            return
+        st.update(step="lcode", phone=phone, hash=sent.phone_code_hash, t=time.time())
         return await m.reply("📩 OTP sent. Send it **with spaces**, e.g. `1 2 3 4 5`" + CANCEL_TXT)
 
     if step == "lcode":
@@ -630,7 +631,10 @@ async def admin_input(m: Message, st: dict):
         if len(code) < 5:
             return await m.reply("❌ Code should be 5+ digits. Send again or /cancel.")
         try:
-            await c.sign_in(st["phone"], st["hash"], code)
+            res = await c.sign_in(st["phone"], st["hash"], code)
+            if not isinstance(res, User):
+                await clear_state(uid)
+                return await reply(m, "❌ This phone number has no Telegram account yet.", [BACK_HOME])
         except SessionPasswordNeeded:
             st["step"] = "lpw"
             return await m.reply("🔐 2-step verification is on. Send the **password**." + CANCEL_TXT)
@@ -667,11 +671,10 @@ async def admin_input(m: Message, st: dict):
 
 
 def _price_or_default(text: str):
-    if text == "-":
+    if (text or "").strip() == "-":
         return 0
     try:
-        v = float(text.replace(",", ""))
-        return v if v >= 0 else None
+        return core.parse_amount(text, allow_zero=True)
     except ValueError:
         return None
 
@@ -713,13 +716,16 @@ async def after_login(m: Message, purpose: str, docs: list[dict], pw: str | None
                 if has_active:
                     dup.append(f"{d['phone']} (in an active order)")
                     continue
-                await db.update_stock(existing["_id"], {
+                updated = await db.update_stock(existing["_id"], {
                     "status": "available", "session": d["session"], "phone": d["phone"],
                     "country": d["country"], "country_name": d["country_name"], "password": pw,
                     "title": f"{d['country_name']} account", "tg_name": d["name"], "tag": tag,
                     "added_by": uid, "added_by_name": m.from_user.first_name or "", "updated": db.now(),
-                }, unset={"reserved_by": "", "reserved_at": ""})
-                added.append(f"{shop_tg.flag(d['country'])} +{d['phone']} (updated)")
+                }, unset={"reserved_by": "", "reserved_at": ""}, where={"status": existing["status"]})
+                if updated:
+                    added.append(f"{shop_tg.flag(d['country'])} +{d['phone']} (updated)")
+                else:
+                    dup.append(f"{d['phone']} (busy)")
                 continue
             await db.add_stock({"kind": "account", "uid": d["uid"], "session": d["session"], "phone": d["phone"],
                                 "country": d["country"], "country_name": d["country_name"], "password": pw,
@@ -732,12 +738,12 @@ async def after_login(m: Message, purpose: str, docs: list[dict], pw: str | None
         warn = ""
         if added and not any(price_of(shop, {"kind": "account", "country": d["country"]}) for d in docs):
             warn = "\n\n⚠️ No account price set yet – use 💰 Set Price or buyers can't purchase."
-        text = (f"✅ **{len(added)} {core.TAGS[tag]} account(s) added to stock**\n" + "\n".join(added) +
-                (f"\n\n♻️ Already in stock: {', '.join(dup)}" if dup else "") + err_txt + warn)
+        text = (f"✅ **{len(added)} {core.TAGS[tag]} account(s) added to stock**\n" + "\n".join(core.cap(added)) +
+                (f"\n\n♻️ Already in stock: {', '.join(core.cap(dup))}" if dup else "") + err_txt + warn)
         return await reply(m, text, [[B("➕ Add more", "so:addk:account", G), B("💰 Prices", "so:price", P)], BACK_HOME])
     d = docs[0]
     await db.save_seller(d["uid"], d["session"], {"name": d["name"], "phone": d["phone"]}, pw)
-    SSTATE[uid] = {"step": "urls", "kind": purpose, "seller": d["uid"]}
+    await core.set_state(uid, {"step": "urls", "kind": purpose, "seller": d["uid"]})
     lg(f"Seller account saved: {d['name']} ({d['uid']})", "👤")
     note = "" if pw else "\n⚠️ No 2-step password saved – automatic ownership transfer will NOT work for this account."
     return await reply(m, f"✅ Owner account **{clean(d['name'])}** saved.{note}\n\n🔗 Now send the **{purpose} URLs** it owns "

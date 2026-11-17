@@ -57,17 +57,14 @@ async def validate_session(text: str) -> dict:
     """Start a string session, read who it is. Returns a dict ready for the stock."""
     session, fix = userbot.telethon_to_pyrogram(text.strip())
     c = userbot.new_client(session, "stk")
-    await c.start()
+    await userbot._start(c)
     try:
         me = await c.get_me()
         if fix:
             await c.storage.user_id(me.id)
         fresh = await c.export_session_string()
     finally:
-        try:
-            await c.stop()
-        except Exception:
-            pass
+        await asyncio.shield(userbot._close(c))
     return account_doc(me, fresh)
 
 

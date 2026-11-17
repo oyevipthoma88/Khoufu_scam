@@ -119,20 +119,47 @@ def _header(entries: list) -> str:
             f"━━━━━━━━━━━━━━━━━━\n")
 
 
+MAX_BATCH = 3600
+_carry: list[str] = []
+
+
+def _fit(entry: str, limit: int = 800) -> str:
+    """Ensure an entry fits well inside the batch limit; if overly long, truncate plain."""
+    if len(entry) <= limit:
+        return entry
+    plain = re.sub(r"<[^>]+>", "", entry)
+    n = limit - 50
+    while n > 10 and len(html.escape(plain[:n])) > limit - 20:
+        n -= 10
+    return f"<blockquote>▫️ {html.escape(plain[:n])}…</blockquote>"
+
+
 async def _worker():
+    global _carry
     while True:
-        first = await _queue.get()
-        entries = [first]
-        # collect for up to 3 seconds -> one message instead of many
+        entries = list(_carry)
+        _carry = []
+        if not entries:
+            first = await _queue.get()
+            entries.append(first)
         deadline = time.time() + 3
-        while time.time() < deadline and sum(len(x) + 1 for x in entries) < 3300:
+        while time.time() < deadline:
             try:
-                entries.append(await asyncio.wait_for(_queue.get(), max(0.05, deadline - time.time())))
+                item = await asyncio.wait_for(_queue.get(), max(0.05, deadline - time.time()))
+                entries.append(item)
             except asyncio.TimeoutError:
                 break
-        text = (_header(entries) + "\n".join(entries))[:4000]
-        if text.count("<blockquote>") != text.count("</blockquote>"):  # cut in the middle -> drop last
-            text = text[:text.rfind("<blockquote>")]
+        hdr = _header(entries)
+        to_send = []
+        cur_len = len(hdr)
+        for idx, e in enumerate(entries):
+            e = _fit(e)
+            if cur_len + len(e) + 1 > MAX_BATCH and to_send:
+                _carry = entries[idx:]
+                break
+            to_send.append(e)
+            cur_len += len(e) + 1
+        text = _header(to_send) + "\n".join(to_send)
         for _ in range(3):
             try:
                 await _bot.send_message(config.LOG_CHANNEL, text, parse_mode=_html(),

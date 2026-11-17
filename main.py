@@ -22,7 +22,7 @@ from pyrogram.errors import (
 )
 from pyrogram.enums import ButtonStyle, MessageEntityType
 from pyrogram.errors import BadRequest, FloodWait, MessageNotModified, QueryIdInvalid
-from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup as M, Message
+from pyrogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup as M, Message, User
 
 import config
 import database as db
@@ -284,7 +284,7 @@ async def callbacks(_, q: CallbackQuery):
     except Exception:
         pass
     try:
-        await shop.clear_state(q.from_user.id)  # leaving the shop flow
+        await drop_state(q.from_user.id)  # leaving the shop flow
         await handle_cb(q)
     except Exception as e:
         log.exception("callback %s failed", q.data)
@@ -698,7 +698,7 @@ async def handle_input(m: Message):
 
     if not m.text:
         return await m.reply("Please send text. /cancel to stop")
-    text = m.text.strip()
+    text = m.text if step == "password" else (m.text or "").strip()
 
     # ---- string session
     if step == "string":
@@ -724,11 +724,13 @@ async def handle_input(m: Message):
         if len(phone.lstrip("+")) < 7:
             return await m.reply("❌ That doesn't look like a phone number. Example: `+919876543210`")
         c = userbot.new_client(None, "login")
+        st["client"] = c
         try:
             await c.connect()
             sent = await c.send_code(phone)
         except PhoneNumberInvalid:
             await _disc(c)
+            st.pop("client", None)
             return await m.reply("❌ Invalid phone number. Try again or /cancel.")
         except FloodWait as e:
             await _disc(c)
@@ -738,7 +740,10 @@ async def handle_input(m: Message):
             await _disc(c)
             STATE.pop(uid, None)
             return await reply(m, f"❌ {friendly(e)}", [BACK])
-        STATE[uid] = {"step": "code", "client": c, "phone": phone, "hash": sent.phone_code_hash, "t": time.time()}
+        if STATE.get(uid) is not st:
+            await _disc(c)
+            return
+        st.update(step="code", phone=phone, hash=sent.phone_code_hash, t=time.time())
         return await m.reply("📩 OTP sent. Send it **with spaces**, e.g. `1 2 3 4 5`\n/cancel to stop")
 
     if step == "code":
@@ -751,7 +756,10 @@ async def handle_input(m: Message):
         if len(code) < 5:
             return await m.reply("❌ Code should be 5+ digits. Send again or /cancel.")
         try:
-            await c.sign_in(st["phone"], st["hash"], code)
+            res = await c.sign_in(st["phone"], st["hash"], code)
+            if not isinstance(res, User):
+                await drop_state(uid)
+                return await reply(m, "❌ This phone number has no Telegram account yet.", [BACK])
         except SessionPasswordNeeded:
             st["step"] = "password"
             return await m.reply("🔐 2-step verification is on. Send the **password**.\n/cancel to stop")
